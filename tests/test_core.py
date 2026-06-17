@@ -11,7 +11,7 @@ from py_nic_manager.backends import (
     _macos_adapter_forwarding_state,
     decode_command_output,
 )
-from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, route_sort_key
+from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
@@ -109,6 +109,14 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
     assert adapters == ["adapter"]
     assert routes == ["route"]
     assert elapsed < 0.35
+
+
+def test_format_elapsed_time_uses_seconds_minutes_and_hours() -> None:
+    assert format_elapsed_time(0) == "0s"
+    assert format_elapsed_time(59.9) == "59s"
+    assert format_elapsed_time(60) == "1m 00s"
+    assert format_elapsed_time(65) == "1m 05s"
+    assert format_elapsed_time(3661) == "1h 01m 01s"
 
 
 def test_route_metrics_round_trip() -> None:

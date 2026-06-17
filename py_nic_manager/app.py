@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import queue
 import threading
+import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -29,6 +30,9 @@ class NetworkManagerApp(tk.Tk):
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._busy_depth = 0
         self._busy_message_var = tk.StringVar(value="")
+        self._busy_elapsed_var = tk.StringVar(value="Elapsed: 0s")
+        self._busy_started_at: float | None = None
+        self._busy_elapsed_after_id: str | None = None
         self._admin_only_widgets: list[tk.Widget] = []
         self._last_suggested_loopback_value = _default_loopback_value(self.backend.name)
         self._adapter_sort_column = "index"
@@ -105,9 +109,10 @@ class NetworkManagerApp(tk.Tk):
         busy_panel = ttk.Frame(self.busy_overlay, padding=18)
         busy_panel.place(relx=0.5, rely=0.5, anchor="center")
         ttk.Label(busy_panel, text="Working", style="Header.TLabel").grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(busy_panel, textvariable=self._busy_message_var).grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(busy_panel, textvariable=self._busy_message_var).grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(busy_panel, textvariable=self._busy_elapsed_var).grid(row=2, column=0, sticky="ew", pady=(0, 10))
         self.busy_progress = ttk.Progressbar(busy_panel, mode="indeterminate", length=260)
-        self.busy_progress.grid(row=2, column=0, sticky="ew")
+        self.busy_progress.grid(row=3, column=0, sticky="ew")
 
     def _build_adapters_tab(self) -> None:
         self.adapters_tab.columnconfigure(0, weight=2)
@@ -782,8 +787,11 @@ class NetworkManagerApp(tk.Tk):
         self.after(100, self._poll_queue)
 
     def _begin_busy(self, message: str) -> None:
+        if self._busy_depth == 0:
+            self._busy_started_at = time.monotonic()
         self._busy_depth += 1
         self._busy_message_var.set(message)
+        self._update_busy_elapsed()
         self.status_var.set(message)
         self.busy_overlay.grid()
         self.busy_overlay.lift()
@@ -796,11 +804,31 @@ class NetworkManagerApp(tk.Tk):
         if self._busy_depth > 0:
             self._busy_depth -= 1
         if self._busy_depth == 0:
+            self._cancel_busy_elapsed_timer()
+            self._busy_started_at = None
+            self._busy_elapsed_var.set("Elapsed: 0s")
             self.busy_progress.stop()
             self.busy_overlay.grid_remove()
             self.configure(cursor="")
         else:
             self.busy_overlay.lift()
+
+    def _update_busy_elapsed(self) -> None:
+        if self._busy_depth <= 0 or self._busy_started_at is None:
+            return
+        elapsed_seconds = int(time.monotonic() - self._busy_started_at)
+        self._busy_elapsed_var.set(f"Elapsed: {format_elapsed_time(elapsed_seconds)}")
+        self._cancel_busy_elapsed_timer()
+        self._busy_elapsed_after_id = self.after(1000, self._update_busy_elapsed)
+
+    def _cancel_busy_elapsed_timer(self) -> None:
+        if self._busy_elapsed_after_id is None:
+            return
+        try:
+            self.after_cancel(self._busy_elapsed_after_id)
+        except tk.TclError:
+            pass
+        self._busy_elapsed_after_id = None
 
     def _set_config_text(self, text: str) -> None:
         self.config_text.configure(state="normal")
@@ -898,6 +926,17 @@ def _format_forwarding(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"
+
+
+def format_elapsed_time(seconds: int | float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
 
 
 def _default_loopback_value(backend_name: str) -> str:
