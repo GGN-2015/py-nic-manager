@@ -102,6 +102,8 @@ class RouteInfo:
     gateway: str = ""
     interface: str = ""
     metric: int | None = None
+    interface_metric: int | None = None
+    effective_metric: int | None = None
     family: str = "ipv4"
     protocol: str = ""
     table: str = ""
@@ -113,6 +115,8 @@ class RouteInfo:
             gateway=str(data.get("gateway", "")),
             interface=str(data.get("interface", "")),
             metric=_optional_int(data.get("metric")),
+            interface_metric=_optional_int(data.get("interface_metric")),
+            effective_metric=_optional_int(data.get("effective_metric")),
             family=str(data.get("family", "ipv4")),
             protocol=str(data.get("protocol", "")),
             table=str(data.get("table", "")),
@@ -124,6 +128,8 @@ class RouteInfo:
             "gateway": self.gateway,
             "interface": self.interface,
             "metric": self.metric,
+            "interface_metric": self.interface_metric,
+            "effective_metric": self.effective_metric,
             "family": self.family,
             "protocol": self.protocol,
             "table": self.table,
@@ -205,4 +211,3 @@ def _optional_bool(value: Any) -> bool | None:
     if text in {"0", "false", "no", "disabled", "off"}:
         return False
     return None
-

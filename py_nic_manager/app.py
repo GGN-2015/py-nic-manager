@@ -192,7 +192,7 @@ class NetworkManagerApp(tk.Tk):
         self.routes_tab.columnconfigure(1, weight=1)
         self.routes_tab.rowconfigure(0, weight=1)
 
-        columns = ("gateway", "interface", "metric", "protocol", "table")
+        columns = ("gateway", "interface", "route_metric", "interface_metric", "effective_metric", "protocol", "table")
         self.route_tree = ttk.Treeview(
             self.routes_tab,
             columns=columns,
@@ -202,15 +202,19 @@ class NetworkManagerApp(tk.Tk):
         self.route_tree.heading("#0", text="Destination")
         self.route_tree.heading("gateway", text="Gateway")
         self.route_tree.heading("interface", text="Interface")
-        self.route_tree.heading("metric", text="Metric")
+        self.route_tree.heading("route_metric", text="Route Metric")
+        self.route_tree.heading("interface_metric", text="Interface Metric")
+        self.route_tree.heading("effective_metric", text="Effective Metric")
         self.route_tree.heading("protocol", text="Protocol")
         self.route_tree.heading("table", text="Table")
-        self.route_tree.column("#0", width=220, minwidth=160)
-        self.route_tree.column("gateway", width=160)
-        self.route_tree.column("interface", width=160)
-        self.route_tree.column("metric", width=80, anchor="center")
-        self.route_tree.column("protocol", width=110)
-        self.route_tree.column("table", width=90)
+        self.route_tree.column("#0", width=190, minwidth=150)
+        self.route_tree.column("gateway", width=135)
+        self.route_tree.column("interface", width=150)
+        self.route_tree.column("route_metric", width=105, anchor="center")
+        self.route_tree.column("interface_metric", width=120, anchor="center")
+        self.route_tree.column("effective_metric", width=120, anchor="center")
+        self.route_tree.column("protocol", width=95)
+        self.route_tree.column("table", width=75)
         self.route_tree.grid(row=0, column=0, sticky="nsew")
         self.route_tree.bind("<<TreeviewSelect>>", self._on_route_select)
 
@@ -231,7 +235,7 @@ class NetworkManagerApp(tk.Tk):
         self._labeled_entry(panel, "Destination", self.route_destination_var, 1, admin_required=True)
         self._labeled_entry(panel, "Gateway", self.route_gateway_var, 2, admin_required=True)
         self._labeled_entry(panel, "Interface", self.route_interface_var, 3, admin_required=True)
-        self._labeled_entry(panel, "Metric", self.route_metric_var, 4, admin_required=True)
+        self._labeled_entry(panel, "Route metric", self.route_metric_var, 4, admin_required=True)
 
         self.add_route_button = ttk.Button(panel, text="Add Route", command=self.add_route)
         self.add_route_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 6))
@@ -351,6 +355,8 @@ class NetworkManagerApp(tk.Tk):
                     route.gateway,
                     route.interface,
                     "" if route.metric is None else str(route.metric),
+                    "" if route.interface_metric is None else str(route.interface_metric),
+                    "" if route.effective_metric is None else str(route.effective_metric),
                     route.protocol,
                     route.table,
                 ),

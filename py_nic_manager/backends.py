@@ -219,14 +219,23 @@ $adapters | ConvertTo-Json -Depth 6
 
     def list_routes(self) -> list[RouteInfo]:
         script = r"""
+$interfaceMetrics = @{}
+Get-NetIPInterface -AddressFamily IPv4 | ForEach-Object {
+  $interfaceMetrics[[int]$_.InterfaceIndex] = [int]$_.InterfaceMetric
+}
 Get-NetRoute -AddressFamily IPv4 |
   Sort-Object -Property DestinationPrefix, InterfaceAlias, NextHop |
   ForEach-Object {
+    $interfaceMetric = $interfaceMetrics[[int]$_.InterfaceIndex]
+    if ($null -eq $interfaceMetric) { $interfaceMetric = 0 }
+    $routeMetric = [int]$_.RouteMetric
     [pscustomobject]@{
       destination = [string]$_.DestinationPrefix
       gateway = [string]$_.NextHop
       interface = [string]$_.InterfaceAlias
-      metric = [int]$_.RouteMetric
+      metric = $routeMetric
+      interface_metric = $interfaceMetric
+      effective_metric = $routeMetric + $interfaceMetric
       family = "ipv4"
       protocol = [string]$_.Protocol
       table = ""
@@ -1001,12 +1010,14 @@ def _dedupe_commands(commands: Iterable[list[str]]) -> list[list[str]]:
     return unique
 
 
-def _route_key(route: RouteInfo) -> tuple[str, str, str, int | None]:
+def _route_key(route: RouteInfo) -> tuple[str, str, str, int | None, int | None, int | None]:
     return (
         route.destination.strip().lower(),
         route.gateway.strip().lower(),
         route.interface.strip().lower(),
         route.metric,
+        route.interface_metric,
+        route.effective_metric,
     )
 
 

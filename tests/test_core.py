@@ -18,7 +18,7 @@ def test_validation_helpers() -> None:
 
 
 def test_command_output_decodes_utf8_and_gbk() -> None:
-    text = "本地连接 已启用"
+    text = "\u672c\u5730\u8fde\u63a5 \u5df2\u542f\u7528"
 
     assert decode_command_output(text.encode("utf-8")) == text
     assert decode_command_output(text.encode("gbk")) == text
@@ -48,6 +48,25 @@ def test_snapshot_round_trip(tmp_path) -> None:
     assert loaded.platform == "TestOS"
     assert loaded.adapters[0].name == "eth0"
     assert loaded.routes[0].gateway == "192.0.2.1"
+    assert loaded.routes[0].interface_metric is None
+    assert loaded.routes[0].effective_metric is None
+
+
+def test_route_metrics_round_trip() -> None:
+    route = RouteInfo(
+        "0.0.0.0/0",
+        "192.0.2.1",
+        "Ethernet",
+        metric=10,
+        interface_metric=25,
+        effective_metric=35,
+    )
+
+    loaded = RouteInfo.from_dict(route.to_dict())
+
+    assert loaded.metric == 10
+    assert loaded.interface_metric == 25
+    assert loaded.effective_metric == 35
 
 
 def test_windows_adapter_plan_contains_netsh_and_mac_property() -> None:
@@ -63,7 +82,19 @@ def test_windows_adapter_plan_contains_netsh_and_mac_property() -> None:
         False,
     )
 
-    assert ["netsh", "interface", "ip", "set", "address", "name=Ethernet", "static", "192.0.2.10", "255.255.255.0", "192.0.2.1", "1"] in plan.commands
+    assert [
+        "netsh",
+        "interface",
+        "ip",
+        "set",
+        "address",
+        "name=Ethernet",
+        "static",
+        "192.0.2.10",
+        "255.255.255.0",
+        "192.0.2.1",
+        "1",
+    ] in plan.commands
     assert any("Set-NetAdapterAdvancedProperty" in " ".join(command) for command in plan.commands)
 
 
