@@ -29,6 +29,7 @@ class NetworkManagerApp(tk.Tk):
         self._busy_depth = 0
         self._busy_message_var = tk.StringVar(value="")
         self._admin_only_widgets: list[tk.Widget] = []
+        self._last_suggested_loopback_value = _default_loopback_value(self.backend.name)
         self._adapter_sort_column = "index"
         self._adapter_sort_descending = False
         self._route_sort_column = "destination"
@@ -194,7 +195,7 @@ class NetworkManagerApp(tk.Tk):
 
         ttk.Separator(panel).grid(row=11, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Label(panel, text="Loopback", style="Header.TLabel").grid(row=12, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.loopback_name_var = tk.StringVar(value=_default_loopback_value(self.backend.name))
+        self.loopback_name_var = tk.StringVar(value=self._last_suggested_loopback_value)
         self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 13, admin_required=True)
         self.create_loopback_button = ttk.Button(
             panel,
@@ -337,6 +338,7 @@ class NetworkManagerApp(tk.Tk):
 
     def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo]]) -> None:
         self.adapters, self.routes = payload
+        self._refresh_loopback_suggestion()
         self._populate_adapters()
         self._populate_routes()
         self.status_var.set(f"Loaded {len(self.adapters)} adapters and {len(self.routes)} routes.")
@@ -834,6 +836,14 @@ class NetworkManagerApp(tk.Tk):
         except (IndexError, ValueError):
             return None
 
+    def _refresh_loopback_suggestion(self) -> None:
+        current = self.loopback_name_var.get().strip()
+        if current and current != self._last_suggested_loopback_value:
+            return
+        suggestion = _suggest_loopback_value(self.backend.name, self.adapters)
+        self._last_suggested_loopback_value = suggestion
+        self.loopback_name_var.set(suggestion)
+
 
 class PlanDialog(tk.Toplevel):
     def __init__(self, parent: tk.Tk, plan: OperationPlan) -> None:
@@ -890,6 +900,29 @@ def _default_loopback_value(backend_name: str) -> str:
     if backend_name in {"macOS", "POSIX"}:
         return "127.0.0.2/32"
     return "py-loopback0"
+
+
+def _suggest_loopback_value(backend_name: str, adapters: list[AdapterInfo]) -> str:
+    if backend_name in {"macOS", "POSIX"}:
+        used_addresses = {
+            address.address
+            for adapter in adapters
+            for address in adapter.addresses
+            if address.family.lower() == "ipv4"
+        }
+        for host in range(2, 255):
+            candidate = f"127.0.0.{host}"
+            if candidate not in used_addresses:
+                return f"{candidate}/32"
+        return "127.0.1.1/32"
+
+    used_names = {adapter.name.strip().lower() for adapter in adapters}
+    index = 0
+    while True:
+        candidate = f"py-loopback{index}"
+        if candidate.lower() not in used_names:
+            return candidate
+        index += 1
 
 
 def route_sort_key(route: RouteInfo, column: str) -> tuple:

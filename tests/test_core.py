@@ -10,7 +10,7 @@ from py_nic_manager.backends import (
     _macos_adapter_forwarding_state,
     decode_command_output,
 )
-from py_nic_manager.app import route_sort_key
+from py_nic_manager.app import _suggest_loopback_value, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
@@ -65,6 +65,26 @@ def test_adapter_forwarding_round_trip() -> None:
     loaded = AdapterInfo.from_dict(adapter.to_dict())
 
     assert loaded.forwarding_enabled is False
+
+
+def test_loopback_suggestion_skips_existing_adapter_names() -> None:
+    adapters = [
+        AdapterInfo(id="0", name="py-loopback0"),
+        AdapterInfo(id="1", name="PY-LOOPBACK1"),
+        AdapterInfo(id="2", name="Ethernet"),
+    ]
+
+    assert _suggest_loopback_value("Windows", adapters) == "py-loopback2"
+    assert _suggest_loopback_value("Linux", adapters) == "py-loopback2"
+
+
+def test_loopback_suggestion_skips_existing_macos_aliases() -> None:
+    adapters = [
+        AdapterInfo(id="lo0:127.0.0.2", name="lo0:127.0.0.2", addresses=[AddressInfo("127.0.0.2", 32)]),
+        AdapterInfo(id="lo0:127.0.0.3", name="lo0:127.0.0.3", addresses=[AddressInfo("127.0.0.3", 32)]),
+    ]
+
+    assert _suggest_loopback_value("macOS", adapters) == "127.0.0.4/32"
 
 
 def test_route_metrics_round_trip() -> None:
