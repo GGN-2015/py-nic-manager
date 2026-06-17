@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-nic-manager"
+version = "0.1.0"
+description = "A cross-platform GUI network adapter and route manager."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "GGN_2015" }
+]
+dependencies = [
+  "is-admin-user>=0.1.0"
+]
+keywords = ["network", "gui", "nic", "route", "loopback"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Environment :: MacOS X",
+  "Environment :: X11 Applications",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking",
+]
+
+[project.scripts]
+py-nic-manager = "py_nic_manager.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["py_nic_manager*"]
+
