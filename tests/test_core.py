@@ -18,6 +18,7 @@ from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, forma
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
+from py_nic_manager.tk_fonts import BUNDLED_FONT_FAMILY, bundled_font_paths
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
 
@@ -148,6 +149,16 @@ def test_gui_preference_env_values() -> None:
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "pyqt6"}) == "qt"
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "tkinter"}) == "tk"
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "surprise"}) == "auto"
+
+
+def test_bundled_tk_font_assets_are_present() -> None:
+    paths = bundled_font_paths()
+    names = {path.name for path in paths}
+
+    assert BUNDLED_FONT_FAMILY == "JetBrains Mono"
+    assert names == {"JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"}
+    assert all(path.exists() and path.stat().st_size > 100_000 for path in paths)
+    assert (paths[0].parent / "JetBrainsMono-OFL.txt").exists()
 
 
 def test_qt_runtime_probe_handles_crashes(monkeypatch) -> None:

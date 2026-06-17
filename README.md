@@ -11,6 +11,11 @@ Administrative actions require Administrator/root privileges; when the app is
 started without those privileges, it opens in read-only mode and clearly asks
 the user to restart it with elevated permissions.
 
+The package includes JetBrains Mono for the `tkinter` fallback interface so
+Linux systems do not depend on rough default Tk fonts. JetBrains Mono is
+distributed under the SIL Open Font License; the license text is bundled in the
+package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
+
 ## Features
 
 - View network adapters, IPv4 addresses, MAC addresses, gateways, DNS servers,

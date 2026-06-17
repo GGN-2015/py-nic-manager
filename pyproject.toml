@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-nic-manager"
-version = "0.1.15"
+version = "0.1.16"
 description = "A cross-platform GUI network adapter and route manager."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +36,9 @@ py-nic-manager = "py_nic_manager.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["py_nic_manager*"]
+
+[tool.setuptools.package-data]
+py_nic_manager = ["assets/fonts/*.ttf", "assets/fonts/*.txt"]
 
 [dependency-groups]
 dev = [

@@ -12,6 +12,7 @@ from .admin import is_admin
 from .backends import BackendError, BaseBackend, get_backend
 from .io import export_snapshot, import_snapshot
 from .models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
+from .tk_fonts import configure_tk_fonts
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
 
@@ -39,6 +40,9 @@ class NetworkManagerApp(tk.Tk):
         self._adapter_sort_descending = False
         self._route_sort_column = "destination"
         self._route_sort_descending = False
+        self.ui_font_family = configure_tk_fonts(self)
+        self.ui_text_font = (self.ui_font_family, 10)
+        self.ui_heading_font = (self.ui_font_family, 11, "bold")
 
         self._build_style()
         self._build_layout()
@@ -52,11 +56,12 @@ class NetworkManagerApp(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("Header.TLabel", font=("", 11, "bold"))
+        style.configure("Header.TLabel", font=self.ui_heading_font)
         style.configure("Danger.TLabel", foreground="#9b1c1c")
         style.configure("Good.TLabel", foreground="#166534")
         style.configure("Action.TButton", padding=(12, 6))
-        style.configure("Treeview", rowheight=24)
+        style.configure("Treeview", font=self.ui_text_font, rowheight=24)
+        style.configure("Treeview.Heading", font=self.ui_heading_font)
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -293,7 +298,12 @@ class NetworkManagerApp(tk.Tk):
         self.apply_config_button.grid(row=0, column=2, padx=8)
         self._admin_only_widgets.append(self.apply_config_button)
 
-        self.config_text = scrolledtext.ScrolledText(self.config_tab, height=12, wrap="word")
+        self.config_text = scrolledtext.ScrolledText(
+            self.config_tab,
+            font=self.ui_text_font,
+            height=12,
+            wrap="word",
+        )
         self.config_text.grid(row=2, column=0, sticky="nsew")
         self.config_text.insert(
             "1.0",
@@ -305,7 +315,7 @@ class NetworkManagerApp(tk.Tk):
     def _build_log_tab(self) -> None:
         self.log_tab.columnconfigure(0, weight=1)
         self.log_tab.rowconfigure(0, weight=1)
-        self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap="word")
+        self.log_text = scrolledtext.ScrolledText(self.log_tab, font=self.ui_text_font, wrap="word")
         self.log_text.grid(row=0, column=0, sticky="nsew")
         self.log_text.configure(state="disabled")
 
@@ -890,7 +900,8 @@ class PlanDialog(tk.Toplevel):
         self.rowconfigure(1, weight=1)
 
         ttk.Label(self, text=plan.title, style="Header.TLabel", padding=(12, 10, 12, 4)).grid(row=0, column=0, sticky="ew")
-        text = scrolledtext.ScrolledText(self, wrap="word")
+        text_font = getattr(parent, "ui_text_font", None)
+        text = scrolledtext.ScrolledText(self, font=text_font, wrap="word")
         text.grid(row=1, column=0, sticky="nsew", padx=12, pady=8)
         text.insert("1.0", plan.as_text())
         text.configure(state="disabled")
