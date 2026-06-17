@@ -546,22 +546,58 @@ New-ItemProperty `
         name = rule.name.strip()
         if not name:
             raise BackendError("A NAT rule name is required.")
-        external_prefix = _validate_windows_nat_external_prefix(rule.outbound_interface)
-        external = (
-            f' -ExternalIPInterfaceAddressPrefix "{_ps_escape(external_prefix)}"'
-            if external_prefix
-            else ""
-        )
-        script = (
-            f'Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue | '
-            "Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue\n"
-            f'New-NetNat -Name "{_ps_escape(name)}" '
-            f'-InternalIPInterfaceAddressPrefix "{_ps_escape(source)}"{external}'
-        )
+        outbound_interface = _validate_nat_outbound_interface(rule.outbound_interface)
+        script = rf"""
+function ConvertTo-IPv4NetworkPrefix {{
+  param([string]$IPAddress, [int]$PrefixLength)
+  $bytes = [System.Net.IPAddress]::Parse($IPAddress).GetAddressBytes()
+  [Array]::Reverse($bytes)
+  $value = [BitConverter]::ToUInt32($bytes, 0)
+  if ($PrefixLength -eq 0) {{
+    $mask = [uint32]0
+  }} else {{
+    $mask = [uint32](([uint64]0xffffffff -shl (32 - $PrefixLength)) -band [uint64]0xffffffff)
+  }}
+  $network = [uint32]($value -band $mask)
+  $networkBytes = [BitConverter]::GetBytes($network)
+  [Array]::Reverse($networkBytes)
+  "$([System.Net.IPAddress]::new($networkBytes))/$PrefixLength"
+}}
+
+$outboundInterface = "{_ps_escape(outbound_interface)}"
+try {{
+  $externalAddresses = @(
+    Get-NetIPAddress -InterfaceAlias $outboundInterface -AddressFamily IPv4 -ErrorAction Stop |
+      Where-Object {{
+        $_.IPAddress -and
+        $_.IPAddress -notlike "169.254.*" -and
+        $_.IPAddress -ne "127.0.0.1" -and
+        [int]$_.PrefixLength -lt 32
+      }}
+  )
+}} catch {{
+  throw "Outbound interface '$outboundInterface' was not found or has no IPv4 configuration."
+}}
+if (-not $externalAddresses) {{
+  throw "Outbound interface '$outboundInterface' has no usable IPv4 address for Windows WinNAT."
+}}
+$externalAddress = $externalAddresses |
+  Sort-Object `
+    @{{ Expression = {{ if ($_.AddressState -eq "Preferred") {{ 0 }} else {{ 1 }} }} }}, `
+    @{{ Expression = {{ if ($_.SkipAsSource) {{ 1 }} else {{ 0 }} }} }}, `
+    PrefixLength |
+  Select-Object -First 1
+$externalPrefix = ConvertTo-IPv4NetworkPrefix $externalAddress.IPAddress ([int]$externalAddress.PrefixLength)
+Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue |
+  Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
+New-NetNat `
+  -Name "{_ps_escape(name)}" `
+  -InternalIPInterfaceAddressPrefix "{_ps_escape(source)}" `
+  -ExternalIPInterfaceAddressPrefix $externalPrefix
+"""
         notes = [
             "Windows WinNAT rules are persistent.",
-            "Windows WinNAT selects the external route by the system route table when the external prefix is left blank.",
-            "Windows WinNAT external prefix is an IP prefix such as 203.0.113.0/24, not an adapter name.",
+            f'Py NIC Manager resolves outbound interface "{outbound_interface}" to its IPv4 external prefix before creating the WinNAT rule.',
         ]
         if not rule.enabled:
             notes.append("WinNAT does not support disabled stored NAT rules; this rule will be created enabled.")
@@ -1412,6 +1448,7 @@ def _managed_nat_create_plan(rule: NatRule, platform_name: str) -> OperationPlan
     name = rule.name.strip()
     if not name:
         raise BackendError("A NAT rule name is required.")
+    outbound_interface = _validate_nat_outbound_interface(rule.outbound_interface)
     command = [
         sys.executable,
         "-m",
@@ -1422,8 +1459,7 @@ def _managed_nat_create_plan(rule: NatRule, platform_name: str) -> OperationPlan
         "--source-cidr",
         source,
     ]
-    if rule.outbound_interface.strip():
-        command.extend(["--outbound-interface", rule.outbound_interface.strip()])
+    command.extend(["--outbound-interface", outbound_interface])
     if not rule.enabled:
         command.append("--disabled")
     return OperationPlan(
@@ -1477,23 +1513,11 @@ def _validate_windows_nat_source(value: str) -> str:
     return str(network)
 
 
-def _validate_windows_nat_external_prefix(value: str) -> str:
+def _validate_nat_outbound_interface(value: str) -> str:
     text = value.strip()
     if not text:
-        return ""
-    try:
-        network = ipaddress.ip_network(text, strict=False)
-    except ValueError as exc:
-        raise BackendError(
-            "Windows WinNAT external prefix must be an IPv4 CIDR such as 203.0.113.0/24, "
-            "not an adapter name like WLAN. Leave it blank to let Windows choose the external path "
-            "from the route table."
-        ) from exc
-    if network.version != 4:
-        raise BackendError("Windows WinNAT external prefix must be IPv4.")
-    if network.prefixlen == 0:
-        raise BackendError("Windows WinNAT external prefix must be narrower than 0.0.0.0/0.")
-    return str(network)
+        raise BackendError("A NAT outbound interface is required.")
+    return text
 
 
 def _parse_nat_network(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network:

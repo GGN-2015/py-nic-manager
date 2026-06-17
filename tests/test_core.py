@@ -476,20 +476,22 @@ def test_iptables_nat_parser_marks_managed_and_external_rules() -> None:
 def test_windows_nat_plan_uses_persistent_winnat() -> None:
     backend = WindowsBackend(dry_run=True)
 
-    plan = backend.plan_nat_create(NatRule("nat0", "192.168.0.0/24"))
+    plan = backend.plan_nat_create(NatRule("nat0", "192.168.0.0/24", "WLAN"))
     rendered = " ".join(plan.commands[0])
 
     assert plan.restart_required is False
     assert "New-NetNat" in rendered
     assert "InternalIPInterfaceAddressPrefix" in rendered
-    assert "ExternalIPInterfaceAddressPrefix" not in rendered
+    assert "ExternalIPInterfaceAddressPrefix" in rendered
+    assert 'InterfaceAlias $outboundInterface' in rendered
+    assert '$outboundInterface = "WLAN"' in rendered
 
 
-def test_windows_nat_rejects_adapter_name_as_external_prefix() -> None:
+def test_windows_nat_requires_outbound_interface() -> None:
     backend = WindowsBackend(dry_run=True)
 
-    with pytest.raises(BackendError, match="not an adapter name"):
-        backend.plan_nat_create(NatRule("nat0", "192.168.0.0/16", "WLAN"))
+    with pytest.raises(BackendError, match="outbound interface"):
+        backend.plan_nat_create(NatRule("nat0", "192.168.0.0/16", ""))
 
 
 def test_windows_nat_rejects_default_route_as_internal_prefix() -> None:
@@ -584,7 +586,7 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
         gateway="192.0.2.1",
         interface="Ethernet",
     )
-    nat_plan = manager.plan_create_nat_rule("nat1", "192.168.10.0/24")
+    nat_plan = manager.plan_create_nat_rule("nat1", "192.168.10.0/24", outbound_interface="Ethernet")
     delete_nat_plan = manager.plan_delete_nat_rule("nat0")
     restart_plan = manager.plan_restart_system()
 
