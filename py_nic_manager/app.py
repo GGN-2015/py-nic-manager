@@ -28,6 +28,8 @@ class NetworkManagerApp(tk.Tk):
         self._busy_depth = 0
         self._busy_message_var = tk.StringVar(value="")
         self._admin_only_widgets: list[tk.Widget] = []
+        self._adapter_sort_column = "index"
+        self._adapter_sort_descending = False
 
         self._build_style()
         self._build_layout()
@@ -107,21 +109,23 @@ class NetworkManagerApp(tk.Tk):
         self.adapters_tab.columnconfigure(1, weight=1)
         self.adapters_tab.rowconfigure(0, weight=1)
 
-        columns = ("status", "ipv4", "mac", "gateway", "dns", "kind")
+        columns = ("index", "status", "ipv4", "mac", "gateway", "dns", "kind")
         self.adapter_tree = ttk.Treeview(
             self.adapters_tab,
             columns=columns,
             show="tree headings",
             selectmode="browse",
         )
-        self.adapter_tree.heading("#0", text="Adapter")
-        self.adapter_tree.heading("status", text="Status")
-        self.adapter_tree.heading("ipv4", text="IPv4")
-        self.adapter_tree.heading("mac", text="MAC")
-        self.adapter_tree.heading("gateway", text="Gateway")
-        self.adapter_tree.heading("dns", text="DNS")
-        self.adapter_tree.heading("kind", text="Type")
+        self._set_adapter_heading("#0", "Adapter", "name")
+        self._set_adapter_heading("index", "Index", "index")
+        self._set_adapter_heading("status", "Status", "status")
+        self._set_adapter_heading("ipv4", "IPv4", "ipv4")
+        self._set_adapter_heading("mac", "MAC", "mac")
+        self._set_adapter_heading("gateway", "Gateway", "gateway")
+        self._set_adapter_heading("dns", "DNS", "dns")
+        self._set_adapter_heading("kind", "Type", "kind")
         self.adapter_tree.column("#0", width=190, minwidth=160)
+        self.adapter_tree.column("index", width=70, anchor="center")
         self.adapter_tree.column("status", width=90, anchor="center")
         self.adapter_tree.column("ipv4", width=170)
         self.adapter_tree.column("mac", width=145)
@@ -321,7 +325,8 @@ class NetworkManagerApp(tk.Tk):
     def _populate_adapters(self) -> None:
         selected = self._selected_adapter_id()
         self.adapter_tree.delete(*self.adapter_tree.get_children())
-        for index, adapter in enumerate(self.adapters):
+        self._refresh_adapter_headings()
+        for index, adapter in self._sorted_adapter_items():
             ipv4 = _first_ipv4(adapter)
             iid = str(index)
             self.adapter_tree.insert(
@@ -330,6 +335,7 @@ class NetworkManagerApp(tk.Tk):
                 iid=iid,
                 text=adapter.name,
                 values=(
+                    index,
                     adapter.status,
                     _format_address(ipv4),
                     adapter.mac,
@@ -340,6 +346,64 @@ class NetworkManagerApp(tk.Tk):
             )
         if selected is not None and selected in self.adapter_tree.get_children():
             self.adapter_tree.selection_set(selected)
+
+    def _set_adapter_heading(self, column_id: str, label: str, sort_column: str) -> None:
+        self.adapter_tree.heading(
+            column_id,
+            text=label,
+            command=lambda column=sort_column: self._sort_adapters_by(column),
+        )
+
+    def _refresh_adapter_headings(self) -> None:
+        labels = {
+            "name": ("#0", "Adapter"),
+            "index": ("index", "Index"),
+            "status": ("status", "Status"),
+            "ipv4": ("ipv4", "IPv4"),
+            "mac": ("mac", "MAC"),
+            "gateway": ("gateway", "Gateway"),
+            "dns": ("dns", "DNS"),
+            "kind": ("kind", "Type"),
+        }
+        for sort_column, (column_id, label) in labels.items():
+            indicator = ""
+            if sort_column == self._adapter_sort_column:
+                indicator = " v" if self._adapter_sort_descending else " ^"
+            self._set_adapter_heading(column_id, label + indicator, sort_column)
+
+    def _sort_adapters_by(self, column: str) -> None:
+        if self._adapter_sort_column == column:
+            self._adapter_sort_descending = not self._adapter_sort_descending
+        else:
+            self._adapter_sort_column = column
+            self._adapter_sort_descending = False
+        self._populate_adapters()
+
+    def _sorted_adapter_items(self) -> list[tuple[int, AdapterInfo]]:
+        items = list(enumerate(self.adapters))
+        return sorted(
+            items,
+            key=lambda item: self._adapter_sort_key(item[0], item[1]),
+            reverse=self._adapter_sort_descending,
+        )
+
+    def _adapter_sort_key(self, index: int, adapter: AdapterInfo) -> tuple[int, str]:
+        column = self._adapter_sort_column
+        ipv4 = _first_ipv4(adapter)
+        values = {
+            "name": adapter.name,
+            "index": str(index),
+            "status": adapter.status,
+            "ipv4": _format_address(ipv4),
+            "mac": adapter.mac,
+            "gateway": ", ".join(adapter.gateways),
+            "dns": ", ".join(adapter.dns_servers),
+            "kind": "Loopback" if adapter.is_loopback else "Physical",
+        }
+        if column == "index":
+            return (0, values["index"].zfill(8))
+        value = values.get(column, adapter.name).strip().lower()
+        return (0 if value else 1, value)
 
     def _populate_routes(self) -> None:
         selected = self._selected_route_id()
