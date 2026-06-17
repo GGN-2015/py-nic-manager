@@ -75,16 +75,21 @@ class NetworkManager:
             return routes
         return sort_routes(routes, sort_by=sort_by, descending=descending)
 
+    def get_global_forwarding_enabled(self) -> bool | None:
+        return self.backend.get_global_forwarding_enabled()
+
     def get_snapshot(self, *, concurrent: bool = True) -> NetworkSnapshot:
         if not concurrent:
             return self.backend.get_snapshot()
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             adapters_future = executor.submit(self.backend.list_adapters)
             routes_future = executor.submit(self.backend.list_routes)
+            global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
             return NetworkSnapshot(
                 platform=self.backend.name,
                 adapters=adapters_future.result(),
                 routes=routes_future.result(),
+                global_forwarding_enabled=global_forwarding_future.result(),
             )
 
     def export_snapshot(self, path: str | Path, snapshot: NetworkSnapshot | None = None) -> Path:
@@ -222,6 +227,20 @@ class NetworkManager:
     ) -> list[CommandResult]:
         return self.run_plan(
             self.plan_set_adapter_forwarding(adapter, enabled),
+            require_admin=require_admin,
+        )
+
+    def plan_set_global_forwarding(self, enabled: bool) -> OperationPlan:
+        return self.backend.plan_global_forwarding_update(bool(enabled))
+
+    def set_global_forwarding(
+        self,
+        enabled: bool,
+        *,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_set_global_forwarding(enabled),
             require_admin=require_admin,
         )
 

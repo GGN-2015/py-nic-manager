@@ -144,6 +144,7 @@ class NetworkSnapshot:
     platform: str
     adapters: list[AdapterInfo]
     routes: list[RouteInfo]
+    global_forwarding_enabled: bool | None = None
     captured_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc)
         .replace(microsecond=0)
@@ -167,6 +168,7 @@ class NetworkSnapshot:
                 for item in data.get("routes", [])
                 if isinstance(item, dict)
             ],
+            global_forwarding_enabled=_optional_bool(data.get("global_forwarding_enabled")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -174,6 +176,7 @@ class NetworkSnapshot:
             "schema_version": self.schema_version,
             "platform": self.platform,
             "captured_at": self.captured_at,
+            "global_forwarding_enabled": self.global_forwarding_enabled,
             "adapters": [item.to_dict() for item in self.adapters],
             "routes": [item.to_dict() for item in self.routes],
         }
@@ -184,6 +187,7 @@ class OperationPlan:
     title: str
     commands: list[list[str]]
     notes: list[str] = field(default_factory=list)
+    restart_required: bool = False
 
     def as_text(self) -> str:
         parts: list[str] = [self.title, ""]

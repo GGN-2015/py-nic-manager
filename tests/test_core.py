@@ -53,6 +53,7 @@ def test_snapshot_round_trip(tmp_path) -> None:
             )
         ],
         routes=[RouteInfo("0.0.0.0/0", "192.0.2.1", "eth0", 10)],
+        global_forwarding_enabled=True,
     )
     path.write_text(json.dumps(snapshot.to_dict()), encoding="utf-8")
 
@@ -63,6 +64,7 @@ def test_snapshot_round_trip(tmp_path) -> None:
     assert loaded.routes[0].gateway == "192.0.2.1"
     assert loaded.routes[0].interface_metric is None
     assert loaded.routes[0].effective_metric is None
+    assert loaded.global_forwarding_enabled is True
 
 
 def test_adapter_forwarding_round_trip() -> None:
@@ -103,16 +105,21 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
             time.sleep(0.2)
             return ["route"]
 
+        def get_global_forwarding_enabled(self):
+            time.sleep(0.2)
+            return True
+
     class Loader:
         backend = SlowBackend()
         _load_network_state = NetworkManagerApp._load_network_state
 
     started_at = time.perf_counter()
-    adapters, routes = Loader()._load_network_state()
+    adapters, routes, global_forwarding = Loader()._load_network_state()
     elapsed = time.perf_counter() - started_at
 
     assert adapters == ["adapter"]
     assert routes == ["route"]
+    assert global_forwarding is True
     assert elapsed < 0.35
 
 
@@ -301,6 +308,36 @@ def test_windows_forwarding_plan_uses_netipinterface() -> None:
     assert "-Forwarding Disabled" in rendered
 
 
+def test_windows_global_forwarding_plan_updates_ip_enable_router() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    plan = backend.plan_global_forwarding_update(True)
+    rendered = " ".join(plan.commands[0])
+
+    assert plan.restart_required is True
+    assert "IPEnableRouter" in rendered
+    assert "-Value 1" in rendered
+
+
+def test_windows_global_forwarding_read_avoids_noisy_missing_value_cmdlet() -> None:
+    class CapturingWindowsBackend(WindowsBackend):
+        command: list[str] | None = None
+
+        def run_json(self, command: list[str]) -> object:
+            self.command = command
+            return {"enabled": False}
+
+    backend = CapturingWindowsBackend(dry_run=True)
+
+    enabled = backend.get_global_forwarding_enabled()
+
+    assert enabled is False
+    assert backend.command is not None
+    rendered = " ".join(backend.command)
+    assert "Get-ItemProperty" in rendered
+    assert "Get-ItemPropertyValue" not in rendered
+
+
 def test_linux_route_plan_uses_ipv4_ip_route() -> None:
     backend = LinuxBackend(dry_run=True)
     route = RouteInfo("198.51.100.0/24", "192.0.2.1", "eth0", 5)
@@ -345,6 +382,15 @@ def test_linux_forwarding_plan_uses_sysctl() -> None:
     assert plan.commands == [["sysctl", "-w", "net.ipv4.conf.eth0.forwarding=0"]]
 
 
+def test_linux_global_forwarding_plan_uses_ip_forward_sysctl() -> None:
+    backend = LinuxBackend(dry_run=True)
+
+    plan = backend.plan_global_forwarding_update(False)
+
+    assert plan.restart_required is True
+    assert plan.commands == [["sysctl", "-w", "net.ipv4.ip_forward=0"]]
+
+
 def test_macos_loopback_create_uses_alias_address() -> None:
     backend = MacOSBackend(dry_run=True)
 
@@ -378,15 +424,18 @@ def test_snapshot_apply_deletes_missing_route_and_adds_new_route() -> None:
         platform="Windows",
         adapters=[],
         routes=[RouteInfo("203.0.113.0/24", "192.0.2.1", "Ethernet", 20)],
+        global_forwarding_enabled=True,
     )
 
     plan = backend.plan_snapshot_apply(snapshot)
     rendered = "\n".join(" ".join(command) for command in plan.commands)
 
     assert 'Remove-NetRoute' in rendered
+    assert "IPEnableRouter" in rendered
     assert 'DestinationPrefix "198.51.100.0/24"' in rendered
     assert 'New-NetRoute' in rendered
     assert 'DestinationPrefix "203.0.113.0/24"' in rendered
+    assert plan.restart_required is True
 
 
 def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
@@ -403,6 +452,7 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
         mac="00:11:22:33:44:66",
     )
     forwarding_plan = manager.plan_set_adapter_forwarding("Ethernet", False)
+    global_forwarding_plan = manager.plan_set_global_forwarding(True)
     create_loopback_plan = manager.plan_create_loopback()
     delete_loopback_plan = manager.plan_delete_loopback("py-loopback0")
     update_loopback_plan = manager.plan_update_loopback("py-loopback0", address="192.0.2.60/24")
@@ -428,9 +478,12 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     )
 
     assert loaded.platform == "Windows"
+    assert loaded.global_forwarding_enabled is False
     assert snapshot.adapters[0].name == "Ethernet"
     assert any("netsh" in command[0].lower() for command in adapter_plan.commands)
     assert "Set-NetIPInterface" in " ".join(forwarding_plan.commands[0])
+    assert global_forwarding_plan.restart_required is True
+    assert "IPEnableRouter" in " ".join(global_forwarding_plan.commands[0])
     assert "py-loopback1" in create_loopback_plan.commands[0]
     assert delete_loopback_plan.title == "Delete loopback adapter"
     assert update_loopback_plan.commands
@@ -476,6 +529,9 @@ def test_python_api_route_sorting_uses_network_and_metric_types() -> None:
 
 
 class _FakeWindowsBackend(WindowsBackend):
+    def get_global_forwarding_enabled(self):
+        return False
+
     def list_adapters(self):
         return [
             AdapterInfo(

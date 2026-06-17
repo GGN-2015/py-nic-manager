@@ -20,7 +20,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 ## Features
 
 - View network adapters, IPv4 addresses, MAC addresses, gateways, DNS servers,
-  DHCP state, IPv4 router-forwarding state, and loopback status.
+  DHCP state, global and per-adapter IPv4 router-forwarding state, and
+  loopback status.
 - Edit existing adapter IPv4 address, prefix length, gateway, DNS servers, MAC
   address, and DHCP mode where the operating system backend supports it.
 - Create, edit, and delete loopback-style adapters:
@@ -29,9 +30,11 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
   - Linux: dummy interfaces through `ip link`.
   - macOS and generic POSIX: loopback aliases on `lo0`.
 - View, add, update, and delete IPv4 routes through a visual route table editor.
+- Enable or disable global IPv4 router forwarding on supported systems.
 - Enable or disable IPv4 router forwarding for a selected adapter where the
   operating system backend supports per-interface forwarding.
-- Export the current adapters and routes to a JSON configuration snapshot.
+- Export the current adapters, routes, and global forwarding state to a JSON
+  configuration snapshot.
 - Import a saved snapshot and apply it as a best-effort one-click restore after
   previewing the system commands that will run.
 - Preview every mutating command before execution.
@@ -108,7 +111,9 @@ See [PROGRAMMING_API.md](PROGRAMMING_API.md) for the complete API reference.
 IPv4 router forwarding means the operating system may forward IP packets that
 arrive on one interface and are destined for another host. It is not required
 for ordinary web browsing, Wi-Fi connectivity, DNS, or other traffic generated
-by the local machine.
+by the local machine. Changing the global IPv4 forwarding setting may require a
+restart before the setting is fully active, and the GUI asks whether to restart
+immediately after a successful change.
 
 ### Windows
 
@@ -121,6 +126,9 @@ the Windows Driver Kit.
 
 Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
 `Set-NetIPInterface -Forwarding`.
+
+Global IPv4 router forwarding uses the Windows `IPEnableRouter` registry
+setting under `Tcpip\Parameters`.
 
 ### Linux
 
@@ -136,6 +144,8 @@ Loopback-style adapters are implemented as Linux dummy interfaces.
 
 Per-adapter IPv4 router forwarding uses
 `net.ipv4.conf.<interface>.forwarding`.
+
+Global IPv4 router forwarding uses `net.ipv4.ip_forward`.
 
 ### macOS
 
@@ -165,6 +175,7 @@ Exported files are JSON documents with this high-level shape:
   "schema_version": 1,
   "platform": "Windows",
   "captured_at": "2026-06-17T02:00:00+00:00",
+  "global_forwarding_enabled": false,
   "adapters": [],
   "routes": []
 }
@@ -173,10 +184,11 @@ Exported files are JSON documents with this high-level shape:
 When applying an imported snapshot, Py NIC Manager:
 
 1. Matches adapters by backend ID first, then by adapter name.
-2. Updates matched adapters with the saved IPv4, gateway, DNS, MAC, and DHCP
+2. Restores the saved global IPv4 forwarding state when the backend supports it.
+3. Updates matched adapters with the saved IPv4, gateway, DNS, MAC, and DHCP
    values where supported.
-3. Adds saved IPv4 routes.
-4. Shows skipped adapters and platform limitations in the command preview.
+4. Adds saved IPv4 routes.
+5. Shows skipped adapters and platform limitations in the command preview.
 
 Applying a snapshot from another operating system is allowed only after a
 warning and is best-effort.

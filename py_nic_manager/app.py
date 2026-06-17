@@ -27,6 +27,7 @@ class NetworkManagerApp(tk.Tk):
         self.is_admin = is_admin()
         self.adapters: list[AdapterInfo] = []
         self.routes: list[RouteInfo] = []
+        self.global_forwarding_enabled: bool | None = None
         self.imported_snapshot: NetworkSnapshot | None = None
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._busy_depth = 0
@@ -40,6 +41,7 @@ class NetworkManagerApp(tk.Tk):
         self._adapter_sort_descending = False
         self._route_sort_column = "destination"
         self._route_sort_descending = False
+        self._active_plan: OperationPlan | None = None
         self.ui_font_family = configure_tk_fonts(self)
         self.ui_text_font = (self.ui_font_family, 10)
         self.ui_heading_font = (self.ui_font_family, 11, "bold")
@@ -80,9 +82,32 @@ class NetworkManagerApp(tk.Tk):
                 "Administrator/root to change adapters, routes, or loopback devices."
             )
         )
+        self.global_forwarding_status_var = tk.StringVar(value="Global IPv4 Forwarding: Unknown")
+        self.global_forwarding_var = tk.BooleanVar(value=False)
         ttk.Label(banner_frame, text="Py NIC Manager", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(banner_frame, text=status_text, style=status_style).grid(row=0, column=1, sticky="w", padx=(16, 0))
-        ttk.Button(banner_frame, text="Refresh", command=self.refresh_all).grid(row=0, column=2, sticky="e")
+        ttk.Button(banner_frame, text="Refresh", command=self.refresh_all).grid(row=0, column=4, sticky="e")
+        ttk.Label(banner_frame, textvariable=self.global_forwarding_status_var).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(6, 0),
+        )
+        self.global_forwarding_check = ttk.Checkbutton(
+            banner_frame,
+            text="Enable global IPv4 forwarding",
+            variable=self.global_forwarding_var,
+        )
+        self.global_forwarding_check.grid(row=1, column=2, sticky="e", padx=(12, 8), pady=(6, 0))
+        self._admin_only_widgets.append(self.global_forwarding_check)
+        self.apply_global_forwarding_button = ttk.Button(
+            banner_frame,
+            text="Apply Global Forwarding",
+            command=self.apply_global_forwarding,
+        )
+        self.apply_global_forwarding_button.grid(row=1, column=3, sticky="e", padx=(0, 8), pady=(6, 0))
+        self._admin_only_widgets.append(self.apply_global_forwarding_button)
 
         self.notebook = ttk.Notebook(self)
         self.notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
@@ -349,14 +374,16 @@ class NetworkManagerApp(tk.Tk):
             busy_message="Loading adapters and routes...",
         )
 
-    def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo]]:
-        with ThreadPoolExecutor(max_workers=2) as executor:
+    def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo], bool | None]:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             adapters_future = executor.submit(self.backend.list_adapters)
             routes_future = executor.submit(self.backend.list_routes)
-            return adapters_future.result(), routes_future.result()
+            global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
+            return adapters_future.result(), routes_future.result(), global_forwarding_future.result()
 
-    def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo]]) -> None:
-        self.adapters, self.routes = payload
+    def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo], bool | None]) -> None:
+        self.adapters, self.routes, self.global_forwarding_enabled = payload
+        self._refresh_global_forwarding_controls()
         self._refresh_loopback_suggestion()
         self._populate_adapters()
         self._populate_routes()
@@ -572,6 +599,14 @@ class NetworkManagerApp(tk.Tk):
             return
         self._confirm_and_run(plan)
 
+    def apply_global_forwarding(self) -> None:
+        try:
+            plan = self.backend.plan_global_forwarding_update(self.global_forwarding_var.get())
+        except BackendError as exc:
+            messagebox.showerror("Forwarding Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
     def create_loopback(self) -> None:
         name = self.loopback_name_var.get().strip()
         if not name:
@@ -669,6 +704,7 @@ class NetworkManagerApp(tk.Tk):
             f"Imported: {path}\n"
             f"Captured at: {snapshot.captured_at}\n"
             f"Source platform: {snapshot.platform}\n"
+            f"Global IPv4 forwarding: {_format_forwarding(snapshot.global_forwarding_enabled)}\n"
             f"Adapters: {len(snapshot.adapters)}\n"
             f"Routes: {len(snapshot.routes)}\n\n"
             "Use Apply Imported Configuration to preview and apply this snapshot."
@@ -700,6 +736,11 @@ class NetworkManagerApp(tk.Tk):
             platform=self.backend.name,
             adapters=self.adapters or self.backend.list_adapters(),
             routes=self.routes or self.backend.list_routes(),
+            global_forwarding_enabled=(
+                self.global_forwarding_enabled
+                if self.global_forwarding_enabled is not None
+                else self.backend.get_global_forwarding_enabled()
+            ),
         )
         export_snapshot(snapshot, path)
         return path
@@ -745,6 +786,7 @@ class NetworkManagerApp(tk.Tk):
         if not dialog.confirmed:
             return
         self.status_var.set("Running network command plan...")
+        self._active_plan = plan
         self._run_background(
             lambda: self.backend.run_plan(plan),
             self._on_plan_finished,
@@ -753,6 +795,7 @@ class NetworkManagerApp(tk.Tk):
 
     def _on_plan_finished(self, results: object) -> None:
         failures = []
+        should_refresh = True
         for result in results:
             self._log(result.summary())
             if not result.ok:
@@ -766,7 +809,31 @@ class NetworkManagerApp(tk.Tk):
         else:
             self.status_var.set("Network command plan completed.")
             messagebox.showinfo("Done", "The network command plan completed.")
-        self.refresh_all()
+            if self._active_plan and self._active_plan.restart_required:
+                should_refresh = not self._ask_restart_now()
+        self._active_plan = None
+        if should_refresh:
+            self.refresh_all()
+
+    def _ask_restart_now(self) -> bool:
+        dialog = RestartPromptDialog(self)
+        self.wait_window(dialog)
+        if dialog.restart_now:
+            self.status_var.set("Restarting system...")
+            self._run_background(
+                self.backend.restart_system,
+                self._on_restart_command_finished,
+                busy_message="Restarting system...",
+            )
+            return True
+        return False
+
+    def _on_restart_command_finished(self, result: object) -> None:
+        if isinstance(result, CommandResult):
+            self._log(result.summary())
+            if not result.ok:
+                messagebox.showerror("Restart Failed", result.summary())
+                self.status_var.set("Restart command failed.")
 
     def _run_background(self, func, callback, *, busy_message: str = "Working...") -> None:
         self._begin_busy(busy_message)
@@ -846,6 +913,12 @@ class NetworkManagerApp(tk.Tk):
         self.config_text.insert("1.0", text)
         self.config_text.configure(state="disabled")
 
+    def _refresh_global_forwarding_controls(self) -> None:
+        self.global_forwarding_status_var.set(
+            f"Global IPv4 Forwarding: {_format_forwarding(self.global_forwarding_enabled)}"
+        )
+        self.global_forwarding_var.set(bool(self.global_forwarding_enabled))
+
     def _log(self, message: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", message.rstrip() + "\n\n")
@@ -918,6 +991,35 @@ class PlanDialog(tk.Toplevel):
 
     def _confirm(self) -> None:
         self.confirmed = True
+        self.destroy()
+
+
+class RestartPromptDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Tk) -> None:
+        super().__init__(parent)
+        self.title("Restart Required")
+        self.transient(parent)
+        self.grab_set()
+        self.restart_now = False
+        self.resizable(False, False)
+
+        frame = ttk.Frame(self, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text="Restart Required", style="Header.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            frame,
+            text="This setting may require a restart to take effect. Restart now?",
+            wraplength=420,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 16))
+        ttk.Button(frame, text="Later", command=self.destroy).grid(row=2, column=0, sticky="e", padx=(0, 8))
+        ttk.Button(frame, text="Restart Now", command=self._restart).grid(row=2, column=1, sticky="e")
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.wait_visibility()
+        self.focus()
+
+    def _restart(self) -> None:
+        self.restart_now = True
         self.destroy()
 
 

@@ -70,11 +70,20 @@ class BaseBackend(ABC):
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         raise NotImplementedError
 
+    @abstractmethod
+    def get_global_forwarding_enabled(self) -> bool | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
+        raise NotImplementedError
+
     def get_snapshot(self) -> NetworkSnapshot:
         return NetworkSnapshot(
             platform=self.name,
             adapters=self.list_adapters(),
             routes=self.list_routes(),
+            global_forwarding_enabled=self.get_global_forwarding_enabled(),
         )
 
     def plan_snapshot_apply(self, snapshot: NetworkSnapshot) -> OperationPlan:
@@ -84,6 +93,13 @@ class BaseBackend(ABC):
         adapters_by_name = {adapter.name: adapter for adapter in current_adapters}
         commands: list[list[str]] = []
         notes: list[str] = []
+        restart_required = False
+
+        if snapshot.global_forwarding_enabled is not None:
+            plan = self.plan_global_forwarding_update(snapshot.global_forwarding_enabled)
+            commands.extend(plan.commands)
+            notes.extend(plan.notes)
+            restart_required = restart_required or plan.restart_required
 
         for saved in snapshot.adapters:
             current = adapters_by_id.get(saved.id) or adapters_by_name.get(saved.name)
@@ -104,10 +120,12 @@ class BaseBackend(ABC):
             )
             commands.extend(plan.commands)
             notes.extend(plan.notes)
+            restart_required = restart_required or plan.restart_required
             if saved.forwarding_enabled is not None:
                 plan = self.plan_adapter_forwarding_update(current, saved.forwarding_enabled)
                 commands.extend(plan.commands)
                 notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
 
         target_routes = [route for route in snapshot.routes if route.family.lower() == "ipv4"]
         target_route_keys = {_route_key(route) for route in target_routes}
@@ -119,11 +137,17 @@ class BaseBackend(ABC):
                 preserved_count += 1
                 continue
             if _route_key(route) not in target_route_keys:
-                commands.extend(self.plan_route_delete(route).commands)
+                plan = self.plan_route_delete(route)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
 
         for route in target_routes:
             if _route_key(route) not in current_route_keys:
-                commands.extend(self.plan_route_add(route).commands)
+                plan = self.plan_route_add(route)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
 
         if preserved_count:
             notes.append(
@@ -135,6 +159,7 @@ class BaseBackend(ABC):
             title="Apply imported network configuration",
             commands=_dedupe_commands(commands),
             notes=notes,
+            restart_required=restart_required,
         )
 
     def should_preserve_route_on_snapshot_apply(self, route: RouteInfo) -> bool:
@@ -153,6 +178,9 @@ class BaseBackend(ABC):
         for command in plan.commands:
             results.append(self.run(command))
         return results
+
+    def restart_system(self) -> CommandResult:
+        return self.run(_restart_command())
 
     def run(self, command: list[str]) -> CommandResult:
         if self.dry_run:
@@ -395,6 +423,41 @@ if ($device) {{
         )
         return OperationPlan("Update adapter forwarding", [_powershell(script)])
 
+    def get_global_forwarding_enabled(self) -> bool | None:
+        script = r"""
+$properties = Get-ItemProperty `
+  -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+  -ErrorAction SilentlyContinue
+$value = $properties.IPEnableRouter
+if ($null -eq $value) { $value = 0 }
+[pscustomobject]@{ enabled = [bool]([int]$value -ne 0) } | ConvertTo-Json -Depth 2
+"""
+        data = self.run_json(_powershell(script))
+        if isinstance(data, dict):
+            return bool(data.get("enabled", False))
+        return None
+
+    def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
+        value = 1 if enabled else 0
+        state = "enabled" if enabled else "disabled"
+        script = rf"""
+New-ItemProperty `
+  -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+  -Name "IPEnableRouter" `
+  -PropertyType DWord `
+  -Value {value} `
+  -Force | Out-Null
+"""
+        return OperationPlan(
+            "Update global IPv4 forwarding",
+            [_powershell(script)],
+            [
+                f"Windows global IPv4 router forwarding will be {state}.",
+                "A restart of Windows or the TCP/IP stack may be required before the system-wide router setting is fully active.",
+            ],
+            restart_required=True,
+        )
+
 
 class LinuxBackend(BaseBackend):
     name = "Linux"
@@ -560,6 +623,34 @@ class LinuxBackend(BaseBackend):
         return OperationPlan(
             "Update adapter forwarding",
             [["sysctl", "-w", f"net.ipv4.conf.{adapter.name}.forwarding={value}"]],
+        )
+
+    def get_global_forwarding_enabled(self) -> bool | None:
+        path = "/proc/sys/net/ipv4/ip_forward"
+        try:
+            with open(path, encoding="ascii") as handle:
+                value = handle.read().strip()
+        except OSError:
+            result = self.run(["sysctl", "-n", "net.ipv4.ip_forward"])
+            if not result.ok:
+                return None
+            value = result.stdout.strip()
+        if value == "1":
+            return True
+        if value == "0":
+            return False
+        return None
+
+    def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
+        value = "1" if enabled else "0"
+        return OperationPlan(
+            "Update global IPv4 forwarding",
+            [["sysctl", "-w", f"net.ipv4.ip_forward={value}"]],
+            [
+                "Linux global IPv4 forwarding controls whether the kernel forwards IPv4 packets at all.",
+                "This command changes the runtime sysctl value; persistent boot configuration depends on the distribution.",
+            ],
+            restart_required=True,
         )
 
     def _dns_servers_by_iface(self) -> dict[str, list[str]]:
@@ -750,6 +841,21 @@ class MacOSBackend(BaseBackend):
             ],
         )
 
+    def get_global_forwarding_enabled(self) -> bool | None:
+        return self._global_forwarding_enabled()
+
+    def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
+        value = "1" if enabled else "0"
+        return OperationPlan(
+            "Update global IPv4 forwarding",
+            [["sysctl", "-w", f"net.inet.ip.forwarding={value}"]],
+            [
+                "macOS global IPv4 forwarding controls whether the kernel forwards IPv4 packets.",
+                "Per-interface forwarding controls still use Py NIC Manager's PF rules.",
+            ],
+            restart_required=True,
+        )
+
     def _services(self) -> dict[str, str]:
         result = self.run(["networksetup", "-listallhardwareports"])
         if not result.ok:
@@ -906,6 +1012,17 @@ class GenericPosixBackend(BaseBackend):
             [f"Per-interface IPv4 forwarding is not portable on this POSIX system; requested {state}."],
         )
 
+    def get_global_forwarding_enabled(self) -> bool | None:
+        return None
+
+    def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
+        state = "enabled" if enabled else "disabled"
+        return OperationPlan(
+            "Update global IPv4 forwarding",
+            [],
+            [f"Global IPv4 forwarding is not portable on this POSIX system; requested {state}."],
+        )
+
 
 class UnsupportedBackend(BaseBackend):
     name = platform.system() or "Unsupported"
@@ -943,6 +1060,12 @@ class UnsupportedBackend(BaseBackend):
         raise BackendError(f"{self.name} is not supported yet.")
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def get_global_forwarding_enabled(self) -> bool | None:
+        return None
+
+    def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
         raise BackendError(f"{self.name} is not supported yet.")
 
 
@@ -1098,6 +1221,15 @@ def _dedupe_commands(commands: Iterable[list[str]]) -> list[list[str]]:
             seen.add(key)
             unique.append(command)
     return unique
+
+
+def _restart_command() -> list[str]:
+    system = platform.system().lower()
+    if system == "windows":
+        return ["shutdown", "/r", "/t", "0"]
+    if system == "linux" and shutil.which("systemctl"):
+        return ["systemctl", "reboot"]
+    return ["shutdown", "-r", "now"]
 
 
 def _route_key(route: RouteInfo) -> tuple[str, str, str, int | None, int | None, int | None]:

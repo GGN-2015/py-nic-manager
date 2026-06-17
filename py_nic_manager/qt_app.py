@@ -180,12 +180,14 @@ class NetworkManagerQtWindow(QMainWindow):
         self.manager = NetworkManager()
         self.adapters: list[AdapterInfo] = []
         self.routes: list[RouteInfo] = []
+        self.global_forwarding_enabled: bool | None = None
         self.imported_snapshot: NetworkSnapshot | None = None
         self._admin_only_widgets: list[QWidget] = []
         self._last_suggested_loopback_value = _default_loopback_value(self.manager.backend_name)
         self._busy_depth = 0
         self._thread_pool = QThreadPool.globalInstance()
         self._workers: set[Worker] = set()
+        self._active_plan: OperationPlan | None = None
 
         self._build_layout()
         self._set_mutating_controls_state()
@@ -211,11 +213,19 @@ class NetworkManagerQtWindow(QMainWindow):
         title.setObjectName("appTitle")
         self.admin_label = QLabel(self._admin_text())
         self.admin_label.setObjectName("goodText" if self.manager.is_admin else "dangerText")
+        self.global_forwarding_label = QLabel("Global IPv4 Forwarding: Unknown")
+        self.global_forwarding_check = QCheckBox("Enable global IPv4 forwarding")
+        self.apply_global_forwarding_button = QPushButton("Apply Global Forwarding")
+        self.apply_global_forwarding_button.clicked.connect(self.apply_global_forwarding)
+        self._admin_only_widgets.extend([self.global_forwarding_check, self.apply_global_forwarding_button])
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.refresh_all)
 
         top_layout.addWidget(title)
         top_layout.addWidget(self.admin_label, 1)
+        top_layout.addWidget(self.global_forwarding_label)
+        top_layout.addWidget(self.global_forwarding_check)
+        top_layout.addWidget(self.apply_global_forwarding_button)
         top_layout.addWidget(self.refresh_button)
         layout.addWidget(top_bar)
 
@@ -509,6 +519,8 @@ class NetworkManagerQtWindow(QMainWindow):
             raise TypeError("Network state loader did not return a snapshot.")
         self.adapters = state.adapters
         self.routes = state.routes
+        self.global_forwarding_enabled = state.global_forwarding_enabled
+        self._refresh_global_forwarding_controls()
         self._refresh_loopback_suggestion()
         self._populate_adapters()
         self._populate_routes()
@@ -661,6 +673,14 @@ class NetworkManagerQtWindow(QMainWindow):
             return
         self._confirm_and_run(plan)
 
+    def apply_global_forwarding(self) -> None:
+        try:
+            plan = self.manager.plan_set_global_forwarding(self.global_forwarding_check.isChecked())
+        except (BackendError, ValueError) as exc:
+            self._error("Forwarding Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
     def create_loopback(self) -> None:
         name = self.loopback_name_edit.text().strip()
         if not name:
@@ -771,6 +791,7 @@ class NetworkManagerQtWindow(QMainWindow):
             f"Imported: {path}\n"
             f"Captured at: {snapshot.captured_at}\n"
             f"Source platform: {snapshot.platform}\n"
+            f"Global IPv4 forwarding: {_format_forwarding(snapshot.global_forwarding_enabled)}\n"
             f"Adapters: {len(snapshot.adapters)}\n"
             f"Routes: {len(snapshot.routes)}\n\n"
             "Use Apply Imported Configuration to preview and apply this snapshot."
@@ -808,6 +829,11 @@ class NetworkManagerQtWindow(QMainWindow):
             platform=self.manager.backend_name,
             adapters=self.adapters or self.manager.list_adapters(),
             routes=self.routes or self.manager.list_routes(),
+            global_forwarding_enabled=(
+                self.global_forwarding_enabled
+                if self.global_forwarding_enabled is not None
+                else self.manager.get_global_forwarding_enabled()
+            ),
         )
         self.manager.export_snapshot(path, snapshot)
         return path
@@ -836,6 +862,7 @@ class NetworkManagerQtWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.confirmed:
             return
         self.statusBar().showMessage("Running network command plan...")
+        self._active_plan = plan
         self._run_background(
             lambda: self.manager.run_plan(plan),
             self._on_plan_finished,
@@ -845,6 +872,7 @@ class NetworkManagerQtWindow(QMainWindow):
     def _on_plan_finished(self, results_object: object) -> None:
         results = list(results_object)
         failures: list[CommandResult] = []
+        should_refresh = True
         for result in results:
             if isinstance(result, CommandResult):
                 self._log(result.summary())
@@ -856,7 +884,36 @@ class NetworkManagerQtWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Network command plan completed.")
             self._info("Done", "The network command plan completed.")
-        self.refresh_all()
+            if self._active_plan and self._active_plan.restart_required:
+                should_refresh = not self._ask_restart_now()
+        self._active_plan = None
+        if should_refresh:
+            self.refresh_all()
+
+    def _ask_restart_now(self) -> bool:
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Question)
+        message.setWindowTitle("Restart Required")
+        message.setText("This setting may require a restart to take effect. Restart now?")
+        restart_button = message.addButton("Restart Now", QMessageBox.ButtonRole.AcceptRole)
+        message.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        message.exec()
+        if message.clickedButton() == restart_button:
+            self.statusBar().showMessage("Restarting system...")
+            self._run_background(
+                self.manager.backend.restart_system,
+                self._on_restart_command_finished,
+                "Restarting system...",
+            )
+            return True
+        return False
+
+    def _on_restart_command_finished(self, result: object) -> None:
+        if isinstance(result, CommandResult):
+            self._log(result.summary())
+            if not result.ok:
+                self._error("Restart Failed", result.summary())
+                self.statusBar().showMessage("Restart command failed.")
 
     def _run_background(self, func: Callable[[], object], callback: Callable[[object], None], message: str) -> None:
         self._begin_busy(message)
@@ -933,6 +990,12 @@ class NetworkManagerQtWindow(QMainWindow):
         suggestion = self.manager.suggest_loopback_value(self.adapters)
         self._last_suggested_loopback_value = suggestion
         self.loopback_name_edit.setText(suggestion)
+
+    def _refresh_global_forwarding_controls(self) -> None:
+        self.global_forwarding_label.setText(
+            f"Global IPv4 Forwarding: {_format_forwarding(self.global_forwarding_enabled)}"
+        )
+        self.global_forwarding_check.setChecked(bool(self.global_forwarding_enabled))
 
     def _log(self, message: str) -> None:
         self.log_text.appendPlainText(message.rstrip() + "\n")

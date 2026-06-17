@@ -21,6 +21,8 @@ manager = NetworkManager()
 for adapter in manager.list_adapters(sort_by="name"):
     print(adapter.name, adapter.mac, adapter.forwarding_enabled)
 
+print("Global IPv4 forwarding:", manager.get_global_forwarding_enabled())
+
 for route in manager.list_routes(sort_by="destination"):
     print(route.destination, route.gateway, route.interface, route.effective_metric)
 ```
@@ -85,6 +87,7 @@ Viewing and lookup:
 
 - `list_adapters(sort_by=None, descending=False)`
 - `list_routes(sort_by=None, descending=False)`
+- `get_global_forwarding_enabled()`
 - `get_snapshot(concurrent=True)`
 - `find_adapter(adapter)`
 - `find_route(route, gateway="", interface="")`
@@ -101,6 +104,8 @@ Adapters:
 
 - `plan_update_adapter(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False)`
 - `update_adapter(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False, require_admin=True)`
+- `plan_set_global_forwarding(enabled)`
+- `set_global_forwarding(enabled, require_admin=True)`
 - `plan_set_adapter_forwarding(adapter, enabled)`
 - `set_adapter_forwarding(adapter, enabled, require_admin=True)`
 
@@ -235,11 +240,21 @@ manager.update_adapter("Ethernet", dhcp_enabled=True)
 
 ## Adapter Forwarding
 
-View forwarding state:
+View global and per-adapter forwarding state:
 
 ```python
+print(manager.get_global_forwarding_enabled())
+
 for adapter in manager.list_adapters():
     print(adapter.name, adapter.forwarding_enabled)
+```
+
+Preview or set global IPv4 router forwarding:
+
+```python
+plan = manager.plan_set_global_forwarding(True)
+print(plan.restart_required)
+results = manager.set_global_forwarding(True)
 ```
 
 Preview or set per-adapter IPv4 router forwarding:
@@ -250,9 +265,13 @@ results = manager.set_adapter_forwarding("Ethernet", False)
 ```
 
 Platform behavior is the same as the GUI: Windows and Linux use native
-per-interface controls. macOS uses the global IPv4 forwarding switch plus Py
-NIC Manager's `pf` rules to block forwarded packets received on disabled
-interfaces.
+global and per-interface controls where the operating system exposes them.
+macOS uses the global IPv4 forwarding switch plus Py NIC Manager's `pf` rules
+to block forwarded packets received on disabled interfaces.
+
+Plans that change global IPv4 forwarding set `OperationPlan.restart_required`
+to `True` because the operating system may need a restart before the global
+router setting is fully active.
 
 ## Loopback Operations
 
