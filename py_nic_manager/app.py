@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import queue
 import threading
 import tkinter as tk
@@ -30,6 +31,8 @@ class NetworkManagerApp(tk.Tk):
         self._admin_only_widgets: list[tk.Widget] = []
         self._adapter_sort_column = "index"
         self._adapter_sort_descending = False
+        self._route_sort_column = "destination"
+        self._route_sort_descending = False
 
         self._build_style()
         self._build_layout()
@@ -203,14 +206,14 @@ class NetworkManagerApp(tk.Tk):
             show="tree headings",
             selectmode="browse",
         )
-        self.route_tree.heading("#0", text="Destination")
-        self.route_tree.heading("gateway", text="Gateway")
-        self.route_tree.heading("interface", text="Interface")
-        self.route_tree.heading("route_metric", text="Route Metric")
-        self.route_tree.heading("interface_metric", text="Interface Metric")
-        self.route_tree.heading("effective_metric", text="Effective Metric")
-        self.route_tree.heading("protocol", text="Protocol")
-        self.route_tree.heading("table", text="Table")
+        self._set_route_heading("#0", "Destination", "destination")
+        self._set_route_heading("gateway", "Gateway", "gateway")
+        self._set_route_heading("interface", "Interface", "interface")
+        self._set_route_heading("route_metric", "Route Metric", "route_metric")
+        self._set_route_heading("interface_metric", "Interface Metric", "interface_metric")
+        self._set_route_heading("effective_metric", "Effective Metric", "effective_metric")
+        self._set_route_heading("protocol", "Protocol", "protocol")
+        self._set_route_heading("table", "Table", "table")
         self.route_tree.column("#0", width=190, minwidth=150)
         self.route_tree.column("gateway", width=135)
         self.route_tree.column("interface", width=150)
@@ -408,7 +411,8 @@ class NetworkManagerApp(tk.Tk):
     def _populate_routes(self) -> None:
         selected = self._selected_route_id()
         self.route_tree.delete(*self.route_tree.get_children())
-        for index, route in enumerate(self.routes):
+        self._refresh_route_headings()
+        for index, route in self._sorted_route_items():
             iid = str(index)
             self.route_tree.insert(
                 "",
@@ -427,6 +431,46 @@ class NetworkManagerApp(tk.Tk):
             )
         if selected is not None and selected in self.route_tree.get_children():
             self.route_tree.selection_set(selected)
+
+    def _set_route_heading(self, column_id: str, label: str, sort_column: str) -> None:
+        self.route_tree.heading(
+            column_id,
+            text=label,
+            command=lambda column=sort_column: self._sort_routes_by(column),
+        )
+
+    def _refresh_route_headings(self) -> None:
+        labels = {
+            "destination": ("#0", "Destination"),
+            "gateway": ("gateway", "Gateway"),
+            "interface": ("interface", "Interface"),
+            "route_metric": ("route_metric", "Route Metric"),
+            "interface_metric": ("interface_metric", "Interface Metric"),
+            "effective_metric": ("effective_metric", "Effective Metric"),
+            "protocol": ("protocol", "Protocol"),
+            "table": ("table", "Table"),
+        }
+        for sort_column, (column_id, label) in labels.items():
+            indicator = ""
+            if sort_column == self._route_sort_column:
+                indicator = " v" if self._route_sort_descending else " ^"
+            self._set_route_heading(column_id, label + indicator, sort_column)
+
+    def _sort_routes_by(self, column: str) -> None:
+        if self._route_sort_column == column:
+            self._route_sort_descending = not self._route_sort_descending
+        else:
+            self._route_sort_column = column
+            self._route_sort_descending = False
+        self._populate_routes()
+
+    def _sorted_route_items(self) -> list[tuple[int, RouteInfo]]:
+        items = list(enumerate(self.routes))
+        return sorted(
+            items,
+            key=lambda item: route_sort_key(item[1], self._route_sort_column),
+            reverse=self._route_sort_descending,
+        )
 
     def _on_adapter_select(self, _event: tk.Event | None = None) -> None:
         adapter = self._selected_adapter()
@@ -807,6 +851,64 @@ def _default_loopback_value(backend_name: str) -> str:
     if backend_name in {"macOS", "POSIX"}:
         return "127.0.0.2/32"
     return "py-loopback0"
+
+
+def route_sort_key(route: RouteInfo, column: str) -> tuple:
+    if column == "destination":
+        return _network_sort_key(route.destination)
+    if column == "gateway":
+        return _ip_or_text_sort_key(route.gateway)
+    if column == "route_metric":
+        return _optional_int_sort_key(route.metric)
+    if column == "interface_metric":
+        return _optional_int_sort_key(route.interface_metric)
+    if column == "effective_metric":
+        return _optional_int_sort_key(route.effective_metric)
+    values = {
+        "interface": route.interface,
+        "protocol": route.protocol,
+        "table": route.table,
+    }
+    return _text_sort_key(values.get(column, ""))
+
+
+def _network_sort_key(value: str) -> tuple:
+    text = value.strip()
+    if not text:
+        return (1, 0, 0, "")
+    if text.lower() == "default":
+        return (0, 0, 0, "default")
+    try:
+        network = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return _text_sort_key(text)
+    if network.version == 4:
+        return (0, int(network.network_address), int(network.prefixlen), "")
+    return (0, int(network.network_address), int(network.prefixlen), f"ipv{network.version}")
+
+
+def _ip_or_text_sort_key(value: str) -> tuple:
+    text = value.strip()
+    if not text:
+        return (1, 0, "")
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return _text_sort_key(text)
+    if ip.version == 4:
+        return (0, int(ip), "")
+    return (0, int(ip), str(ip.version))
+
+
+def _optional_int_sort_key(value: int | None) -> tuple[int, int]:
+    if value is None:
+        return (1, 0)
+    return (0, int(value))
+
+
+def _text_sort_key(value: str) -> tuple[int, str]:
+    text = value.strip().lower()
+    return (0 if text else 1, text)
 
 
 def main() -> None:

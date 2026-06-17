@@ -4,6 +4,7 @@ import json
 import sys
 
 from py_nic_manager.backends import LinuxBackend, MacOSBackend, WindowsBackend, decode_command_output
+from py_nic_manager.app import route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
@@ -67,6 +68,42 @@ def test_route_metrics_round_trip() -> None:
     assert loaded.metric == 10
     assert loaded.interface_metric == 25
     assert loaded.effective_metric == 35
+
+
+def test_route_destination_sort_key_uses_ipv4_integer_then_prefix() -> None:
+    routes = [
+        RouteInfo("10.0.0.0/24"),
+        RouteInfo("0.0.0.0/0"),
+        RouteInfo("192.168.1.0/24"),
+        RouteInfo("10.0.0.0/8"),
+        RouteInfo("default"),
+    ]
+
+    ordered = sorted(routes, key=lambda route: route_sort_key(route, "destination"))
+
+    assert [route.destination for route in ordered] == [
+        "0.0.0.0/0",
+        "default",
+        "10.0.0.0/8",
+        "10.0.0.0/24",
+        "192.168.1.0/24",
+    ]
+
+
+def test_route_numeric_and_text_sort_keys() -> None:
+    routes = [
+        RouteInfo("198.51.100.0/24", "192.0.2.10", "wifi", metric=100, effective_metric=125),
+        RouteInfo("198.51.100.0/24", "192.0.2.2", "ethernet", metric=5, effective_metric=30),
+        RouteInfo("198.51.100.0/24", "", "loopback", metric=None, effective_metric=None),
+    ]
+
+    by_gateway = sorted(routes, key=lambda route: route_sort_key(route, "gateway"))
+    by_metric = sorted(routes, key=lambda route: route_sort_key(route, "route_metric"))
+    by_interface = sorted(routes, key=lambda route: route_sort_key(route, "interface"))
+
+    assert [route.gateway for route in by_gateway] == ["192.0.2.2", "192.0.2.10", ""]
+    assert [route.metric for route in by_metric] == [5, 100, None]
+    assert [route.interface for route in by_interface] == ["ethernet", "loopback", "wifi"]
 
 
 def test_windows_adapter_plan_contains_netsh_and_mac_property() -> None:
