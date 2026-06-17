@@ -25,6 +25,9 @@ class NetworkManagerApp(tk.Tk):
         self.routes: list[RouteInfo] = []
         self.imported_snapshot: NetworkSnapshot | None = None
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._busy_depth = 0
+        self._busy_message_var = tk.StringVar(value="")
+        self._admin_only_widgets: list[tk.Widget] = []
 
         self._build_style()
         self._build_layout()
@@ -85,6 +88,20 @@ class NetworkManagerApp(tk.Tk):
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(12, 5)).grid(row=2, column=0, sticky="ew")
 
+        self.busy_overlay = tk.Frame(self, bg="#d8d8d8", cursor="watch")
+        self.busy_overlay.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        self.busy_overlay.grid_remove()
+        self.busy_overlay.bind("<Button>", lambda _event: "break")
+        self.busy_overlay.bind("<ButtonRelease>", lambda _event: "break")
+        self.busy_overlay.bind("<Key>", lambda _event: "break")
+        self.busy_overlay.bind("<Motion>", lambda _event: "break")
+        busy_panel = ttk.Frame(self.busy_overlay, padding=18)
+        busy_panel.place(relx=0.5, rely=0.5, anchor="center")
+        ttk.Label(busy_panel, text="Working", style="Header.TLabel").grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(busy_panel, textvariable=self._busy_message_var).grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.busy_progress = ttk.Progressbar(busy_panel, mode="indeterminate", length=260)
+        self.busy_progress.grid(row=2, column=0, sticky="ew")
+
     def _build_adapters_tab(self) -> None:
         self.adapters_tab.columnconfigure(0, weight=2)
         self.adapters_tab.columnconfigure(1, weight=1)
@@ -133,13 +150,14 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_dhcp_var = tk.BooleanVar(value=False)
 
         self._labeled_entry(panel, "Name", self.adapter_name_var, 1, readonly=True)
-        self._labeled_entry(panel, "MAC address", self.adapter_mac_var, 2)
-        self._labeled_entry(panel, "IPv4 address", self.adapter_ip_var, 3)
-        self._labeled_entry(panel, "Prefix length", self.adapter_prefix_var, 4)
-        self._labeled_entry(panel, "Gateway", self.adapter_gateway_var, 5)
-        self._labeled_entry(panel, "DNS servers", self.adapter_dns_var, 6)
+        self._labeled_entry(panel, "MAC address", self.adapter_mac_var, 2, admin_required=True)
+        self._labeled_entry(panel, "IPv4 address", self.adapter_ip_var, 3, admin_required=True)
+        self._labeled_entry(panel, "Prefix length", self.adapter_prefix_var, 4, admin_required=True)
+        self._labeled_entry(panel, "Gateway", self.adapter_gateway_var, 5, admin_required=True)
+        self._labeled_entry(panel, "DNS servers", self.adapter_dns_var, 6, admin_required=True)
         self.adapter_dhcp_check = ttk.Checkbutton(panel, text="Use DHCP for IPv4", variable=self.adapter_dhcp_var)
         self.adapter_dhcp_check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self._admin_only_widgets.append(self.adapter_dhcp_check)
 
         self.apply_adapter_button = ttk.Button(
             panel,
@@ -148,23 +166,26 @@ class NetworkManagerApp(tk.Tk):
             command=self.apply_selected_adapter,
         )
         self.apply_adapter_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        self._admin_only_widgets.append(self.apply_adapter_button)
 
         ttk.Separator(panel).grid(row=9, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Label(panel, text="Loopback", style="Header.TLabel").grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.loopback_name_var = tk.StringVar(value=_default_loopback_value(self.backend.name))
-        self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 11)
+        self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 11, admin_required=True)
         self.create_loopback_button = ttk.Button(
             panel,
             text="Create Loopback",
             command=self.create_loopback,
         )
         self.create_loopback_button.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self._admin_only_widgets.append(self.create_loopback_button)
         self.delete_loopback_button = ttk.Button(
             panel,
             text="Delete Selected Loopback",
             command=self.delete_selected_loopback,
         )
         self.delete_loopback_button.grid(row=13, column=0, columnspan=2, sticky="ew")
+        self._admin_only_widgets.append(self.delete_loopback_button)
 
     def _build_routes_tab(self) -> None:
         self.routes_tab.columnconfigure(0, weight=2)
@@ -207,17 +228,20 @@ class NetworkManagerApp(tk.Tk):
         self.route_interface_var = tk.StringVar()
         self.route_metric_var = tk.StringVar()
 
-        self._labeled_entry(panel, "Destination", self.route_destination_var, 1)
-        self._labeled_entry(panel, "Gateway", self.route_gateway_var, 2)
-        self._labeled_entry(panel, "Interface", self.route_interface_var, 3)
-        self._labeled_entry(panel, "Metric", self.route_metric_var, 4)
+        self._labeled_entry(panel, "Destination", self.route_destination_var, 1, admin_required=True)
+        self._labeled_entry(panel, "Gateway", self.route_gateway_var, 2, admin_required=True)
+        self._labeled_entry(panel, "Interface", self.route_interface_var, 3, admin_required=True)
+        self._labeled_entry(panel, "Metric", self.route_metric_var, 4, admin_required=True)
 
         self.add_route_button = ttk.Button(panel, text="Add Route", command=self.add_route)
         self.add_route_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        self._admin_only_widgets.append(self.add_route_button)
         self.update_route_button = ttk.Button(panel, text="Update Selected Route", command=self.update_selected_route)
         self.update_route_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=6)
+        self._admin_only_widgets.append(self.update_route_button)
         self.delete_route_button = ttk.Button(panel, text="Delete Selected Route", command=self.delete_selected_route)
         self.delete_route_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=6)
+        self._admin_only_widgets.append(self.delete_route_button)
 
     def _build_config_tab(self) -> None:
         self.config_tab.columnconfigure(0, weight=1)
@@ -232,6 +256,7 @@ class NetworkManagerApp(tk.Tk):
         ttk.Button(buttons, text="Import Configuration File", command=self.import_configuration_file).grid(row=0, column=1, padx=8)
         self.apply_config_button = ttk.Button(buttons, text="Apply Imported Configuration", command=self.apply_imported_configuration)
         self.apply_config_button.grid(row=0, column=2, padx=8)
+        self._admin_only_widgets.append(self.apply_config_button)
 
         self.config_text = scrolledtext.ScrolledText(self.config_tab, height=12, wrap="word")
         self.config_text.grid(row=2, column=0, sticky="nsew")
@@ -257,32 +282,27 @@ class NetworkManagerApp(tk.Tk):
         row: int,
         *,
         readonly: bool = False,
+        admin_required: bool = False,
     ) -> ttk.Entry:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
         entry = ttk.Entry(parent, textvariable=variable, state="readonly" if readonly else "normal")
         entry.grid(row=row, column=1, sticky="ew", pady=4)
+        if admin_required:
+            self._admin_only_widgets.append(entry)
         return entry
 
     def _set_mutating_controls_state(self) -> None:
         state = "normal" if self.is_admin else "disabled"
-        for button_name in (
-            "apply_adapter_button",
-            "create_loopback_button",
-            "delete_loopback_button",
-            "add_route_button",
-            "update_route_button",
-            "delete_route_button",
-            "apply_config_button",
-        ):
-            button = getattr(self, button_name, None)
-            if button is not None:
-                button.configure(state=state)
-        if hasattr(self, "adapter_dhcp_check"):
-            self.adapter_dhcp_check.configure(state=state)
+        for widget in self._admin_only_widgets:
+            widget.configure(state=state)
 
     def refresh_all(self) -> None:
         self.status_var.set("Loading adapters and routes...")
-        self._run_background(self._load_network_state, self._on_network_state_loaded)
+        self._run_background(
+            self._load_network_state,
+            self._on_network_state_loaded,
+            busy_message="Loading adapters and routes...",
+        )
 
     def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo]]:
         return self.backend.list_adapters(), self.backend.list_routes()
@@ -453,18 +473,12 @@ class NetworkManagerApp(tk.Tk):
         )
         if not path:
             return
-        try:
-            snapshot = NetworkSnapshot(
-                platform=self.backend.name,
-                adapters=self.adapters or self.backend.list_adapters(),
-                routes=self.routes or self.backend.list_routes(),
-            )
-            export_snapshot(snapshot, path)
-        except Exception as exc:
-            messagebox.showerror("Export Failed", str(exc))
-            return
-        self.status_var.set(f"Exported configuration to {path}")
-        self._log(f"Exported configuration to {path}")
+        self.status_var.set("Exporting configuration snapshot...")
+        self._run_background(
+            lambda: self._export_configuration_to_path(path),
+            lambda exported_path: self._on_configuration_exported(str(exported_path)),
+            busy_message="Exporting configuration snapshot...",
+        )
 
     def import_configuration_file(self) -> None:
         path = filedialog.askopenfilename(
@@ -473,11 +487,15 @@ class NetworkManagerApp(tk.Tk):
         )
         if not path:
             return
-        try:
-            snapshot = import_snapshot(path)
-        except Exception as exc:
-            messagebox.showerror("Import Failed", str(exc))
-            return
+        self.status_var.set("Importing configuration snapshot...")
+        self._run_background(
+            lambda: (path, import_snapshot(path)),
+            self._on_configuration_imported,
+            busy_message="Importing configuration snapshot...",
+        )
+
+    def _on_configuration_imported(self, payload: tuple[str, NetworkSnapshot]) -> None:
+        path, snapshot = payload
         self.imported_snapshot = snapshot
         self._set_config_text(
             f"Imported: {path}\n"
@@ -502,12 +520,25 @@ class NetworkManagerApp(tk.Tk):
             )
             if not proceed:
                 return
-        try:
-            plan = self.backend.plan_snapshot_apply(self.imported_snapshot)
-        except BackendError as exc:
-            messagebox.showerror("Apply Failed", str(exc))
-            return
-        self._confirm_and_run(plan)
+        self.status_var.set("Preparing imported configuration plan...")
+        self._run_background(
+            lambda: self.backend.plan_snapshot_apply(self.imported_snapshot),
+            self._confirm_and_run,
+            busy_message="Preparing imported configuration plan...",
+        )
+
+    def _export_configuration_to_path(self, path: str) -> str:
+        snapshot = NetworkSnapshot(
+            platform=self.backend.name,
+            adapters=self.adapters or self.backend.list_adapters(),
+            routes=self.routes or self.backend.list_routes(),
+        )
+        export_snapshot(snapshot, path)
+        return path
+
+    def _on_configuration_exported(self, path: str) -> None:
+        self.status_var.set(f"Exported configuration to {path}")
+        self._log(f"Exported configuration to {path}")
 
     def _adapter_address_from_form(self) -> AddressInfo | None:
         ip_value = self.adapter_ip_var.get().strip()
@@ -546,7 +577,11 @@ class NetworkManagerApp(tk.Tk):
         if not dialog.confirmed:
             return
         self.status_var.set("Running network command plan...")
-        self._run_background(lambda: self.backend.run_plan(plan), self._on_plan_finished)
+        self._run_background(
+            lambda: self.backend.run_plan(plan),
+            self._on_plan_finished,
+            busy_message="Running network command plan...",
+        )
 
     def _on_plan_finished(self, results: object) -> None:
         failures = []
@@ -565,7 +600,9 @@ class NetworkManagerApp(tk.Tk):
             messagebox.showinfo("Done", "The network command plan completed.")
         self.refresh_all()
 
-    def _run_background(self, func, callback) -> None:
+    def _run_background(self, func, callback, *, busy_message: str = "Working...") -> None:
+        self._begin_busy(busy_message)
+
         def worker() -> None:
             try:
                 result = func()
@@ -579,6 +616,7 @@ class NetworkManagerApp(tk.Tk):
         try:
             while True:
                 kind, payload = self._queue.get_nowait()
+                self._end_busy()
                 if kind == "ok":
                     callback, result = payload
                     callback(result)
@@ -589,6 +627,27 @@ class NetworkManagerApp(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)
+
+    def _begin_busy(self, message: str) -> None:
+        self._busy_depth += 1
+        self._busy_message_var.set(message)
+        self.status_var.set(message)
+        self.busy_overlay.grid()
+        self.busy_overlay.lift()
+        self.busy_overlay.focus_set()
+        if self._busy_depth == 1:
+            self.busy_progress.start(12)
+        self.update_idletasks()
+
+    def _end_busy(self) -> None:
+        if self._busy_depth > 0:
+            self._busy_depth -= 1
+        if self._busy_depth == 0:
+            self.busy_progress.stop()
+            self.busy_overlay.grid_remove()
+            self.configure(cursor="")
+        else:
+            self.busy_overlay.lift()
 
     def _set_config_text(self, text: str) -> None:
         self.config_text.configure(state="normal")
