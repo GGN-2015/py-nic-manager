@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
 from collections.abc import Mapping
 
 
 QT_PROBE_TIMEOUT_SECONDS = 8
+WINDOWS_PLATFORM = "windows"
 
 
 def main() -> None:
     preference = _gui_preference()
     if preference == "tk":
+        _run_tkinter()
+        return
+    if preference != "qt" and not _qt_supported_on_current_platform():
         _run_tkinter()
         return
 
@@ -47,6 +52,10 @@ def _gui_preference(env: Mapping[str, str] | None = None) -> str:
     if value in {"tk", "tkinter", "legacy"}:
         return "tk"
     return "auto"
+
+
+def _qt_supported_on_current_platform() -> bool:
+    return platform.system().lower() == WINDOWS_PLATFORM
 
 
 def _qt_runtime_available() -> bool:

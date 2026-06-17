@@ -4,9 +4,10 @@ Py NIC Manager is a cross-platform Python GUI for viewing and changing network
 adapter settings, loopback-style adapters, route tables, and saved network
 configuration snapshots.
 
-The application is written in English and uses a modern PyQt6 interface with an
-automatic light/dark theme. A legacy `tkinter` interface remains available as a
-fallback if PyQt6 cannot be imported. It can run on Windows and POSIX systems.
+The application is written in English. Windows uses a modern PyQt6 interface
+with an automatic light/dark theme. Linux, macOS, and other POSIX systems use
+the `tkinter` interface by default to avoid Qt platform-plugin and `sudo`
+desktop-session issues. It can run on Windows and POSIX systems.
 Administrative actions require Administrator/root privileges; when the app is
 started without those privileges, it opens in read-only mode and clearly asks
 the user to restart it with elevated permissions.
@@ -55,7 +56,7 @@ python -m pip install -e .
 
 The project depends on
 [`is-admin-user`](https://pypi.org/project/is-admin-user/) for privilege
-detection and PyQt6 for the default GUI.
+detection. PyQt6 is installed only on Windows for the default Windows GUI.
 
 ## Running
 
@@ -69,10 +70,9 @@ Or:
 python -m py_nic_manager
 ```
 
-By default, the launcher uses the PyQt6 interface when Qt can initialize in the
-current desktop session. If Qt cannot start, for example because a Linux `sudo`
-session cannot load the `xcb` platform plugin, the launcher automatically falls
-back to the legacy `tkinter` interface.
+By default, the launcher uses the PyQt6 interface on Windows and the `tkinter`
+interface on Linux, macOS, and other POSIX systems. On Windows, if Qt cannot
+start, the launcher automatically falls back to `tkinter`.
 
 You can force a GUI backend with:
 

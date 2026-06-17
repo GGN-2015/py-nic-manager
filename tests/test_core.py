@@ -16,7 +16,7 @@ from py_nic_manager.backends import (
 from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
-from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available
+from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
 from py_nic_manager.tk_fonts import BUNDLED_FONT_FAMILY, bundled_font_paths
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
@@ -149,6 +149,17 @@ def test_gui_preference_env_values() -> None:
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "pyqt6"}) == "qt"
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "tkinter"}) == "tk"
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "surprise"}) == "auto"
+
+
+def test_qt_auto_mode_is_windows_only(monkeypatch) -> None:
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    assert _qt_supported_on_current_platform() is True
+
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    assert _qt_supported_on_current_platform() is False
+
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    assert _qt_supported_on_current_platform() is False
 
 
 def test_bundled_tk_font_assets_are_present() -> None:

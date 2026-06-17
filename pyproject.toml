@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-nic-manager"
-version = "0.1.16"
+version = "0.1.17"
 description = "A cross-platform GUI network adapter and route manager."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "is-admin-user>=0.1.0",
-  "PyQt6>=6.6"
+  "PyQt6>=6.6; sys_platform == 'win32'"
 ]
 keywords = ["network", "gui", "nic", "route", "loopback"]
 classifiers = [
