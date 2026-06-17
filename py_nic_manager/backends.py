@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import locale
 import json
 import os
 import platform
@@ -150,26 +151,23 @@ class BaseBackend(ABC):
             completed = subprocess.run(
                 command,
                 capture_output=True,
-                text=True,
                 check=False,
-                encoding="utf-8",
-                errors="replace",
                 timeout=90,
             )
         except subprocess.TimeoutExpired as exc:
             return CommandResult(
                 command=command,
                 returncode=124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "Command timed out after 90 seconds.",
+                stdout=decode_command_output(exc.stdout or b""),
+                stderr=decode_command_output(exc.stderr or b"") or "Command timed out after 90 seconds.",
             )
         except FileNotFoundError as exc:
             raise BackendError(f"Command not found: {command[0]}") from exc
         return CommandResult(
             command=command,
             returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=decode_command_output(completed.stdout),
+            stderr=decode_command_output(completed.stderr),
         )
 
     def run_json(self, command: list[str]) -> object:
@@ -876,6 +874,69 @@ def _powershell(script: str) -> list[str]:
     if shutil.which("pwsh"):
         executable = "pwsh"
     return [executable, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
+
+
+def decode_command_output(data: bytes | str | None) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    if not data:
+        return ""
+
+    for bom, encoding in (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe", "utf-16-le"),
+        (b"\xfe\xff", "utf-16-be"),
+    ):
+        if data.startswith(bom):
+            return data.decode(encoding, errors="replace")
+
+    for encoding in _candidate_output_encodings():
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        except LookupError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _candidate_output_encodings() -> list[str]:
+    candidates = [
+        "utf-8",
+        locale.getpreferredencoding(False),
+        getattr(locale, "getencoding", lambda: "")(),
+    ]
+    candidates.extend(_windows_code_page_encodings())
+    candidates.extend(["gbk", "cp936", "mbcs", "latin-1"])
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for encoding in candidates:
+        normalized = (encoding or "").strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(encoding)
+    return unique
+
+
+def _windows_code_page_encodings() -> list[str]:
+    if platform.system().lower() != "windows":
+        return []
+    encodings: list[str] = []
+    for args in (["chcp"], ["cmd", "/c", "chcp"]):
+        try:
+            completed = subprocess.run(args, capture_output=True, check=False, timeout=5)
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+        raw = completed.stdout + completed.stderr
+        text = raw.decode("ascii", errors="ignore")
+        match = re.search(r"(\d+)", text)
+        if match:
+            encodings.append(f"cp{match.group(1)}")
+            break
+    return encodings
 
 
 def _windows_dns_commands(name: str, dns_servers: list[str]) -> list[list[str]]:

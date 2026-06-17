@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from py_nic_manager.backends import LinuxBackend, MacOSBackend, WindowsBackend
+from py_nic_manager.backends import LinuxBackend, MacOSBackend, WindowsBackend, decode_command_output
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
@@ -14,6 +14,14 @@ def test_validation_helpers() -> None:
     assert prefix_to_netmask(24) == "255.255.255.0"
     assert validate_network("default") == "default"
     assert validate_network("192.0.2.10/24") == "192.0.2.10/24"
+
+
+def test_command_output_decodes_utf8_and_gbk() -> None:
+    text = "本地连接 已启用"
+
+    assert decode_command_output(text.encode("utf-8")) == text
+    assert decode_command_output(text.encode("gbk")) == text
+    assert decode_command_output(("\ufeff" + text).encode("utf-8")) == text
 
 
 def test_snapshot_round_trip(tmp_path) -> None:
