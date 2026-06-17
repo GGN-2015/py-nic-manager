@@ -10,6 +10,7 @@ from py_nic_manager.backends import (
     LinuxBackend,
     MacOSBackend,
     WindowsBackend,
+    _parse_iptables_nat_rules,
     _macos_adapter_forwarding_state,
     decode_command_output,
 )
@@ -17,7 +18,7 @@ from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as ap
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
-from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
+from py_nic_manager.models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
 from py_nic_manager.tk_fonts import BUNDLED_FONT_FAMILY, bundled_font_paths
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
@@ -53,6 +54,7 @@ def test_snapshot_round_trip(tmp_path) -> None:
             )
         ],
         routes=[RouteInfo("0.0.0.0/0", "192.0.2.1", "eth0", 10)],
+        nat_rules=[NatRule("nat0", "192.168.0.0/24", "eth0")],
         global_forwarding_enabled=True,
     )
     path.write_text(json.dumps(snapshot.to_dict()), encoding="utf-8")
@@ -64,6 +66,7 @@ def test_snapshot_round_trip(tmp_path) -> None:
     assert loaded.routes[0].gateway == "192.0.2.1"
     assert loaded.routes[0].interface_metric is None
     assert loaded.routes[0].effective_metric is None
+    assert loaded.nat_rules[0].source_cidr == "192.168.0.0/24"
     assert loaded.global_forwarding_enabled is True
 
 
@@ -105,6 +108,10 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
             time.sleep(0.2)
             return ["route"]
 
+        def list_nat_rules(self):
+            time.sleep(0.2)
+            return ["nat"]
+
         def get_global_forwarding_enabled(self):
             time.sleep(0.2)
             return True
@@ -114,11 +121,12 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
         _load_network_state = NetworkManagerApp._load_network_state
 
     started_at = time.perf_counter()
-    adapters, routes, global_forwarding = Loader()._load_network_state()
+    adapters, routes, nat_rules, global_forwarding = Loader()._load_network_state()
     elapsed = time.perf_counter() - started_at
 
     assert adapters == ["adapter"]
     assert routes == ["route"]
+    assert nat_rules == ["nat"]
     assert global_forwarding is True
     assert elapsed < 0.35
 
@@ -146,7 +154,7 @@ def test_qt_window_can_be_constructed_without_refresh(monkeypatch) -> None:
     window = qt_app.NetworkManagerQtWindow(auto_refresh=False)
 
     assert window.windowTitle() == "Py NIC Manager"
-    assert window.tabs.count() == 4
+    assert window.tabs.count() == 5
     window.close()
 
 
@@ -391,6 +399,41 @@ def test_linux_global_forwarding_plan_uses_ip_forward_sysctl() -> None:
     assert plan.commands == [["sysctl", "-w", "net.ipv4.ip_forward=0"]]
 
 
+def test_linux_nat_plan_uses_persistent_helper_without_restart() -> None:
+    backend = LinuxBackend(dry_run=True)
+
+    plan = backend.plan_nat_create(NatRule("nat0", "192.168.0.0/24", "eth0"))
+
+    assert plan.restart_required is False
+    assert plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.nat_persistence", "add"]
+    assert "--source-cidr" in plan.commands[0]
+    assert "192.168.0.0/24" in plan.commands[0]
+    assert "--outbound-interface" in plan.commands[0]
+
+
+def test_iptables_nat_parser_marks_managed_and_external_rules() -> None:
+    rules = _parse_iptables_nat_rules(
+        '-A POSTROUTING -s 192.168.0.0/24 -o eth0 -m comment --comment "py-nic-manager-nat:nat0" -j MASQUERADE\n'
+        "-A POSTROUTING -s 10.0.0.0/8 -o wlan0 -j MASQUERADE\n"
+    )
+
+    assert rules[0].name == "nat0"
+    assert rules[0].managed is True
+    assert rules[1].managed is False
+    assert rules[1].persistent is False
+
+
+def test_windows_nat_plan_uses_persistent_winnat() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    plan = backend.plan_nat_create(NatRule("nat0", "192.168.0.0/24"))
+    rendered = " ".join(plan.commands[0])
+
+    assert plan.restart_required is False
+    assert "New-NetNat" in rendered
+    assert "InternalIPInterfaceAddressPrefix" in rendered
+
+
 def test_macos_loopback_create_uses_alias_address() -> None:
     backend = MacOSBackend(dry_run=True)
 
@@ -476,9 +519,12 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
         gateway="192.0.2.1",
         interface="Ethernet",
     )
+    nat_plan = manager.plan_create_nat_rule("nat1", "192.168.10.0/24", outbound_interface="Ethernet")
+    delete_nat_plan = manager.plan_delete_nat_rule("nat0")
 
     assert loaded.platform == "Windows"
     assert loaded.global_forwarding_enabled is False
+    assert loaded.nat_rules[0].name == "nat0"
     assert snapshot.adapters[0].name == "Ethernet"
     assert any("netsh" in command[0].lower() for command in adapter_plan.commands)
     assert "Set-NetIPInterface" in " ".join(forwarding_plan.commands[0])
@@ -490,6 +536,8 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     assert add_route_plan.title == "Add route"
     assert update_route_plan.title == "Update route"
     assert delete_route_plan.title == "Delete route"
+    assert nat_plan.title == "Create NAT rule"
+    assert delete_nat_plan.title == "Delete NAT rule"
 
     results = manager.run_plan(add_route_plan)
     assert all(result.ok for result in results)
@@ -562,3 +610,6 @@ class _FakeWindowsBackend(WindowsBackend):
             RouteInfo("198.51.100.0/24", "192.0.2.1", "Ethernet", 10),
             RouteInfo("127.0.0.0/8", "", "Loopback Pseudo-Interface 1", None, protocol="Local"),
         ]
+
+    def list_nat_rules(self):
+        return [NatRule("nat0", "192.168.0.0/24", "Ethernet")]

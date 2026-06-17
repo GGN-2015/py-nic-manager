@@ -30,11 +30,14 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
   - Linux: dummy interfaces through `ip link`.
   - macOS and generic POSIX: loopback aliases on `lo0`.
 - View, add, update, and delete IPv4 routes through a visual route table editor.
+- View, add, update, and delete persistent IPv4 NAT rules. Supported NAT rules
+  masquerade traffic from a source CIDR when it leaves through the selected
+  outbound interface or system-selected external route.
 - Enable or disable global IPv4 router forwarding on supported systems.
 - Enable or disable IPv4 router forwarding for a selected adapter where the
   operating system backend supports per-interface forwarding.
-- Export the current adapters, routes, and global forwarding state to a JSON
-  configuration snapshot.
+- Export the current adapters, routes, NAT rules, and global forwarding state
+  to a JSON configuration snapshot.
 - Import a saved snapshot and apply it as a best-effort one-click restore after
   previewing the system commands that will run.
 - Preview every mutating command before execution.
@@ -130,6 +133,12 @@ Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
 Global IPv4 router forwarding uses the Windows `IPEnableRouter` registry
 setting under `Tcpip\Parameters`.
 
+Persistent NAT uses Windows WinNAT (`Get-NetNat`, `New-NetNat`, and
+`Remove-NetNat`). WinNAT rules are persistent and take effect immediately after
+the command succeeds. Windows chooses the external path by the route table;
+Py NIC Manager stores the optional external prefix in the outbound-interface
+field when one is supplied.
+
 ### Linux
 
 The Linux backend uses `ip` from iproute2. DNS and DHCP persistence are handled
@@ -147,6 +156,13 @@ Per-adapter IPv4 router forwarding uses
 
 Global IPv4 router forwarding uses `net.ipv4.ip_forward`.
 
+Persistent NAT uses iptables MASQUERADE rules with Py NIC Manager's own
+configuration in `/etc/py-nic-manager/nat-rules.json` plus a systemd service
+that reapplies the rules during boot. Creating, updating, or deleting a NAT rule
+updates the persistent configuration and immediately reapplies the runtime NAT
+table. If systemd or iptables is unavailable, the operation fails instead of
+pretending to be persistent.
+
 ### macOS
 
 The macOS backend uses `networksetup`, `ifconfig`, `route`, and `netstat`.
@@ -158,6 +174,11 @@ macOS has a global IPv4 forwarding switch rather than the same per-interface
 switch exposed by Windows and Linux. Py NIC Manager enables global forwarding
 when needed and uses a `pf` anchor to block forwarded IPv4 packets received on
 interfaces that are disabled in the UI.
+
+Persistent NAT uses a Py NIC Manager `pf` anchor and updates `/etc/pf.conf`
+when needed so the rules are loaded after reboot. Creating, updating, or
+deleting a NAT rule rewrites the anchor and immediately reloads `pf`; no reboot
+is required.
 
 ### Generic POSIX
 
@@ -177,7 +198,8 @@ Exported files are JSON documents with this high-level shape:
   "captured_at": "2026-06-17T02:00:00+00:00",
   "global_forwarding_enabled": false,
   "adapters": [],
-  "routes": []
+  "routes": [],
+  "nat_rules": []
 }
 ```
 
@@ -188,7 +210,8 @@ When applying an imported snapshot, Py NIC Manager:
 3. Updates matched adapters with the saved IPv4, gateway, DNS, MAC, and DHCP
    values where supported.
 4. Adds saved IPv4 routes.
-5. Shows skipped adapters and platform limitations in the command preview.
+5. Restores Py NIC Manager managed persistent NAT rules.
+6. Shows skipped adapters and platform limitations in the command preview.
 
 Applying a snapshot from another operating system is allowed only after a
 warning and is best-effort.

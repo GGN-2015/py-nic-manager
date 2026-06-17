@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from .admin import is_admin
 from .backends import BackendError, BaseBackend, get_backend
 from .io import export_snapshot, import_snapshot
-from .models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
 from .tk_fonts import configure_tk_fonts
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
@@ -27,6 +27,7 @@ class NetworkManagerApp(tk.Tk):
         self.is_admin = is_admin()
         self.adapters: list[AdapterInfo] = []
         self.routes: list[RouteInfo] = []
+        self.nat_rules: list[NatRule] = []
         self.global_forwarding_enabled: bool | None = None
         self.imported_snapshot: NetworkSnapshot | None = None
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -41,6 +42,8 @@ class NetworkManagerApp(tk.Tk):
         self._adapter_sort_descending = False
         self._route_sort_column = "destination"
         self._route_sort_descending = False
+        self._nat_sort_column = "name"
+        self._nat_sort_descending = False
         self._active_plan: OperationPlan | None = None
         self.ui_font_family = configure_tk_fonts(self)
         self.ui_text_font = (self.ui_font_family, 10)
@@ -114,15 +117,18 @@ class NetworkManagerApp(tk.Tk):
 
         self.adapters_tab = ttk.Frame(self.notebook, padding=10)
         self.routes_tab = ttk.Frame(self.notebook, padding=10)
+        self.nat_tab = ttk.Frame(self.notebook, padding=10)
         self.config_tab = ttk.Frame(self.notebook, padding=10)
         self.log_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.adapters_tab, text="Adapters")
         self.notebook.add(self.routes_tab, text="Routes")
+        self.notebook.add(self.nat_tab, text="NAT")
         self.notebook.add(self.config_tab, text="Configuration")
         self.notebook.add(self.log_tab, text="Log")
 
         self._build_adapters_tab()
         self._build_routes_tab()
+        self._build_nat_tab()
         self._build_config_tab()
         self._build_log_tab()
 
@@ -308,6 +314,64 @@ class NetworkManagerApp(tk.Tk):
         self.delete_route_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=6)
         self._admin_only_widgets.append(self.delete_route_button)
 
+    def _build_nat_tab(self) -> None:
+        self.nat_tab.columnconfigure(0, weight=2)
+        self.nat_tab.columnconfigure(1, weight=1)
+        self.nat_tab.rowconfigure(0, weight=1)
+
+        columns = ("source_cidr", "outbound_interface", "enabled", "persistent", "managed")
+        self.nat_tree = ttk.Treeview(
+            self.nat_tab,
+            columns=columns,
+            show="tree headings",
+            selectmode="browse",
+        )
+        self._set_nat_heading("#0", "Name", "name")
+        self._set_nat_heading("source_cidr", "Source CIDR", "source_cidr")
+        self._set_nat_heading("outbound_interface", "Outbound Interface", "outbound_interface")
+        self._set_nat_heading("enabled", "Enabled", "enabled")
+        self._set_nat_heading("persistent", "Persistent", "persistent")
+        self._set_nat_heading("managed", "Managed", "managed")
+        self.nat_tree.column("#0", width=170, minwidth=130)
+        self.nat_tree.column("source_cidr", width=150)
+        self.nat_tree.column("outbound_interface", width=170)
+        self.nat_tree.column("enabled", width=80, anchor="center")
+        self.nat_tree.column("persistent", width=90, anchor="center")
+        self.nat_tree.column("managed", width=90, anchor="center")
+        self.nat_tree.grid(row=0, column=0, sticky="nsew")
+        self.nat_tree.bind("<<TreeviewSelect>>", self._on_nat_select)
+
+        nat_scroll = ttk.Scrollbar(self.nat_tab, orient="vertical", command=self.nat_tree.yview)
+        nat_scroll.grid(row=0, column=0, sticky="nse")
+        self.nat_tree.configure(yscrollcommand=nat_scroll.set)
+
+        panel = ttk.Frame(self.nat_tab, padding=(12, 0, 0, 0))
+        panel.grid(row=0, column=1, sticky="nsew")
+        panel.columnconfigure(1, weight=1)
+
+        ttk.Label(panel, text="NAT Rule Editor", style="Header.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self.nat_name_var = tk.StringVar(value="py-nat0")
+        self.nat_source_var = tk.StringVar(value="192.168.0.0/24")
+        self.nat_outbound_var = tk.StringVar()
+        self.nat_enabled_var = tk.BooleanVar(value=True)
+
+        self._labeled_entry(panel, "Name", self.nat_name_var, 1, admin_required=True)
+        self._labeled_entry(panel, "Source CIDR", self.nat_source_var, 2, admin_required=True)
+        self._labeled_entry(panel, "Outbound interface", self.nat_outbound_var, 3, admin_required=True)
+        self.nat_enabled_check = ttk.Checkbutton(panel, text="Enable NAT rule", variable=self.nat_enabled_var)
+        self.nat_enabled_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self._admin_only_widgets.append(self.nat_enabled_check)
+
+        self.add_nat_button = ttk.Button(panel, text="Add NAT Rule", command=self.add_nat_rule)
+        self.add_nat_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        self._admin_only_widgets.append(self.add_nat_button)
+        self.update_nat_button = ttk.Button(panel, text="Update Selected NAT Rule", command=self.update_selected_nat_rule)
+        self.update_nat_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=6)
+        self._admin_only_widgets.append(self.update_nat_button)
+        self.delete_nat_button = ttk.Button(panel, text="Delete Selected NAT Rule", command=self.delete_selected_nat_rule)
+        self.delete_nat_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=6)
+        self._admin_only_widgets.append(self.delete_nat_button)
+
     def _build_config_tab(self) -> None:
         self.config_tab.columnconfigure(0, weight=1)
         self.config_tab.rowconfigure(2, weight=1)
@@ -374,20 +438,29 @@ class NetworkManagerApp(tk.Tk):
             busy_message="Loading adapters and routes...",
         )
 
-    def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo], bool | None]:
-        with ThreadPoolExecutor(max_workers=3) as executor:
+    def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], bool | None]:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             adapters_future = executor.submit(self.backend.list_adapters)
             routes_future = executor.submit(self.backend.list_routes)
+            nat_future = executor.submit(self.backend.list_nat_rules)
             global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
-            return adapters_future.result(), routes_future.result(), global_forwarding_future.result()
+            return (
+                adapters_future.result(),
+                routes_future.result(),
+                nat_future.result(),
+                global_forwarding_future.result(),
+            )
 
-    def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo], bool | None]) -> None:
-        self.adapters, self.routes, self.global_forwarding_enabled = payload
+    def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], bool | None]) -> None:
+        self.adapters, self.routes, self.nat_rules, self.global_forwarding_enabled = payload
         self._refresh_global_forwarding_controls()
         self._refresh_loopback_suggestion()
         self._populate_adapters()
         self._populate_routes()
-        self.status_var.set(f"Loaded {len(self.adapters)} adapters and {len(self.routes)} routes.")
+        self._populate_nat_rules()
+        self.status_var.set(
+            f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, and {len(self.nat_rules)} NAT rules."
+        )
         self._log(f"Refreshed state from the {self.backend.name} backend.")
 
     def _populate_adapters(self) -> None:
@@ -540,6 +613,66 @@ class NetworkManagerApp(tk.Tk):
             reverse=self._route_sort_descending,
         )
 
+    def _populate_nat_rules(self) -> None:
+        selected = self._selected_nat_id()
+        self.nat_tree.delete(*self.nat_tree.get_children())
+        self._refresh_nat_headings()
+        for index, rule in self._sorted_nat_items():
+            iid = str(index)
+            self.nat_tree.insert(
+                "",
+                "end",
+                iid=iid,
+                text=rule.name,
+                values=(
+                    rule.source_cidr,
+                    rule.outbound_interface,
+                    _format_bool(rule.enabled),
+                    _format_bool(rule.persistent),
+                    _format_bool(rule.managed),
+                ),
+            )
+        if selected is not None and selected in self.nat_tree.get_children():
+            self.nat_tree.selection_set(selected)
+
+    def _set_nat_heading(self, column_id: str, label: str, sort_column: str) -> None:
+        self.nat_tree.heading(
+            column_id,
+            text=label,
+            command=lambda column=sort_column: self._sort_nat_by(column),
+        )
+
+    def _refresh_nat_headings(self) -> None:
+        labels = {
+            "name": ("#0", "Name"),
+            "source_cidr": ("source_cidr", "Source CIDR"),
+            "outbound_interface": ("outbound_interface", "Outbound Interface"),
+            "enabled": ("enabled", "Enabled"),
+            "persistent": ("persistent", "Persistent"),
+            "managed": ("managed", "Managed"),
+        }
+        for sort_column, (column_id, label) in labels.items():
+            indicator = ""
+            if sort_column == self._nat_sort_column:
+                indicator = " v" if self._nat_sort_descending else " ^"
+            self._set_nat_heading(column_id, label + indicator, sort_column)
+
+    def _sort_nat_by(self, column: str) -> None:
+        if self._nat_sort_column == column:
+            self._nat_sort_descending = not self._nat_sort_descending
+        else:
+            self._nat_sort_column = column
+            self._nat_sort_descending = False
+        self._populate_nat_rules()
+
+    def _sorted_nat_items(self) -> list[tuple[int, NatRule]]:
+        items = list(enumerate(self.nat_rules))
+        return sorted(
+            items,
+            key=lambda item: nat_sort_key(item[1], self._nat_sort_column),
+            reverse=self._nat_sort_descending,
+        )
+
     def _on_adapter_select(self, _event: tk.Event | None = None) -> None:
         adapter = self._selected_adapter()
         if adapter is None:
@@ -564,6 +697,15 @@ class NetworkManagerApp(tk.Tk):
         self.route_gateway_var.set(route.gateway)
         self.route_interface_var.set(route.interface)
         self.route_metric_var.set("" if route.metric is None else str(route.metric))
+
+    def _on_nat_select(self, _event: tk.Event | None = None) -> None:
+        rule = self._selected_nat_rule()
+        if rule is None:
+            return
+        self.nat_name_var.set(rule.name)
+        self.nat_source_var.set(rule.source_cidr)
+        self.nat_outbound_var.set(rule.outbound_interface)
+        self.nat_enabled_var.set(rule.enabled)
 
     def apply_selected_adapter(self) -> None:
         adapter = self._selected_adapter()
@@ -668,6 +810,40 @@ class NetworkManagerApp(tk.Tk):
             return
         self._confirm_and_run(plan)
 
+    def add_nat_rule(self) -> None:
+        try:
+            rule = self._nat_rule_from_form()
+            plan = self.backend.plan_nat_create(rule)
+        except (ValueError, BackendError) as exc:
+            messagebox.showerror("Invalid NAT Rule", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def update_selected_nat_rule(self) -> None:
+        old_rule = self._selected_nat_rule()
+        if old_rule is None:
+            messagebox.showinfo("No NAT Rule Selected", "Select a NAT rule first.")
+            return
+        try:
+            new_rule = self._nat_rule_from_form()
+            plan = self.backend.plan_nat_update(old_rule, new_rule)
+        except (ValueError, BackendError) as exc:
+            messagebox.showerror("Invalid NAT Rule", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def delete_selected_nat_rule(self) -> None:
+        rule = self._selected_nat_rule()
+        if rule is None:
+            messagebox.showinfo("No NAT Rule Selected", "Select a NAT rule first.")
+            return
+        try:
+            plan = self.backend.plan_nat_delete(rule)
+        except BackendError as exc:
+            messagebox.showerror("NAT Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
     def export_current_configuration(self) -> None:
         path = filedialog.asksaveasfilename(
             title="Export Network Configuration",
@@ -707,6 +883,8 @@ class NetworkManagerApp(tk.Tk):
             f"Global IPv4 forwarding: {_format_forwarding(snapshot.global_forwarding_enabled)}\n"
             f"Adapters: {len(snapshot.adapters)}\n"
             f"Routes: {len(snapshot.routes)}\n\n"
+            f"NAT rules: {len(snapshot.nat_rules)}\n"
+            "\n"
             "Use Apply Imported Configuration to preview and apply this snapshot."
         )
         self.status_var.set("Imported configuration snapshot.")
@@ -736,6 +914,7 @@ class NetworkManagerApp(tk.Tk):
             platform=self.backend.name,
             adapters=self.adapters or self.backend.list_adapters(),
             routes=self.routes or self.backend.list_routes(),
+            nat_rules=self.nat_rules or self.backend.list_nat_rules(),
             global_forwarding_enabled=(
                 self.global_forwarding_enabled
                 if self.global_forwarding_enabled is not None
@@ -766,6 +945,20 @@ class NetworkManagerApp(tk.Tk):
             gateway=validate_ip(self.route_gateway_var.get(), allow_empty=True),
             interface=self.route_interface_var.get().strip(),
             metric=int(metric_text) if metric_text else None,
+            family="ipv4",
+        )
+
+    def _nat_rule_from_form(self) -> NatRule:
+        name = self.nat_name_var.get().strip()
+        if not name:
+            raise ValueError("A NAT rule name is required.")
+        return NatRule(
+            name=name,
+            source_cidr=validate_network(self.nat_source_var.get()),
+            outbound_interface=self.nat_outbound_var.get().strip(),
+            enabled=self.nat_enabled_var.get(),
+            persistent=True,
+            managed=True,
             family="ipv4",
         )
 
@@ -933,6 +1126,10 @@ class NetworkManagerApp(tk.Tk):
         selection = self.route_tree.selection() if hasattr(self, "route_tree") else ()
         return selection[0] if selection else None
 
+    def _selected_nat_id(self) -> str | None:
+        selection = self.nat_tree.selection() if hasattr(self, "nat_tree") else ()
+        return selection[0] if selection else None
+
     def _selected_adapter(self) -> AdapterInfo | None:
         selected = self._selected_adapter_id()
         if selected is None:
@@ -948,6 +1145,15 @@ class NetworkManagerApp(tk.Tk):
             return None
         try:
             return self.routes[int(selected)]
+        except (IndexError, ValueError):
+            return None
+
+    def _selected_nat_rule(self) -> NatRule | None:
+        selected = self._selected_nat_id()
+        if selected is None:
+            return None
+        try:
+            return self.nat_rules[int(selected)]
         except (IndexError, ValueError):
             return None
 
@@ -1098,6 +1304,22 @@ def route_sort_key(route: RouteInfo, column: str) -> tuple:
         "table": route.table,
     }
     return _text_sort_key(values.get(column, ""))
+
+
+def nat_sort_key(rule: NatRule, column: str) -> tuple:
+    if column == "source_cidr":
+        return _network_sort_key(rule.source_cidr)
+    if column in {"enabled", "persistent", "managed"}:
+        return (0, 0 if getattr(rule, column) else 1)
+    values = {
+        "name": rule.name,
+        "outbound_interface": rule.outbound_interface,
+    }
+    return _text_sort_key(values.get(column, ""))
+
+
+def _format_bool(value: bool) -> str:
+    return "Yes" if value else "No"
 
 
 def _network_sort_key(value: str) -> tuple:

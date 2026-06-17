@@ -37,9 +37,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .api import NetworkManager, adapter_sort_key, route_sort_key
+from .api import NetworkManager, adapter_sort_key, nat_sort_key, route_sort_key
 from .backends import BackendError
-from .models import AdapterInfo, AddressInfo, CommandResult, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
 from .validation import validate_ip, validate_prefix
 
 
@@ -180,6 +180,7 @@ class NetworkManagerQtWindow(QMainWindow):
         self.manager = NetworkManager()
         self.adapters: list[AdapterInfo] = []
         self.routes: list[RouteInfo] = []
+        self.nat_rules: list[NatRule] = []
         self.global_forwarding_enabled: bool | None = None
         self.imported_snapshot: NetworkSnapshot | None = None
         self._admin_only_widgets: list[QWidget] = []
@@ -235,6 +236,7 @@ class NetworkManagerQtWindow(QMainWindow):
 
         self._build_adapters_tab()
         self._build_routes_tab()
+        self._build_nat_tab()
         self._build_config_tab()
         self._build_log_tab()
 
@@ -403,6 +405,68 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter.setSizes([820, 340])
         self.tabs.addTab(tab, "Routes")
 
+    def _build_nat_tab(self) -> None:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+        layout.setContentsMargins(0, 10, 0, 0)
+        layout.setSpacing(12)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        layout.addWidget(splitter)
+
+        self.nat_table = QTableWidget(0, 6)
+        self.nat_table.setHorizontalHeaderLabels(
+            ["Name", "Source CIDR", "Outbound Interface", "Enabled", "Persistent", "Managed"]
+        )
+        self._configure_table(self.nat_table)
+        self.nat_table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        self.nat_table.setColumnWidth(0, 170)
+        self.nat_table.setColumnWidth(1, 150)
+        self.nat_table.setColumnWidth(2, 180)
+        self.nat_table.setColumnWidth(3, 85)
+        self.nat_table.setColumnWidth(4, 95)
+        self.nat_table.setColumnWidth(5, 90)
+        self.nat_table.itemSelectionChanged.connect(self._on_nat_select)
+        splitter.addWidget(self.nat_table)
+
+        panel = self._side_panel()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(14, 14, 14, 14)
+        panel_layout.setSpacing(10)
+        panel_layout.addWidget(self._section_label("NAT Rule Editor"))
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        self.nat_name_edit = self._line_edit("py-nat0", admin_required=True)
+        self.nat_source_edit = self._line_edit("192.168.0.0/24", admin_required=True)
+        self.nat_outbound_edit = self._line_edit(admin_required=True)
+        self.nat_enabled_check = QCheckBox("Enable NAT rule")
+        self.nat_enabled_check.setChecked(True)
+        self._admin_only_widgets.append(self.nat_enabled_check)
+        form.addRow("Name", self.nat_name_edit)
+        form.addRow("Source CIDR", self.nat_source_edit)
+        form.addRow("Outbound interface", self.nat_outbound_edit)
+        form.addRow("", self.nat_enabled_check)
+        panel_layout.addLayout(form)
+
+        self.add_nat_button = QPushButton("Add NAT Rule")
+        self.add_nat_button.setObjectName("primaryButton")
+        self.add_nat_button.clicked.connect(self.add_nat_rule)
+        self.update_nat_button = QPushButton("Update Selected NAT Rule")
+        self.update_nat_button.clicked.connect(self.update_selected_nat_rule)
+        self.delete_nat_button = QPushButton("Delete Selected NAT Rule")
+        self.delete_nat_button.clicked.connect(self.delete_selected_nat_rule)
+        self._admin_only_widgets.extend([self.add_nat_button, self.update_nat_button, self.delete_nat_button])
+        panel_layout.addWidget(self.add_nat_button)
+        panel_layout.addWidget(self.update_nat_button)
+        panel_layout.addWidget(self.delete_nat_button)
+        panel_layout.addStretch(1)
+
+        splitter.addWidget(self._scroll_panel(panel))
+        splitter.setSizes([820, 340])
+        self.tabs.addTab(tab, "NAT")
+
     def _build_config_tab(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -519,12 +583,16 @@ class NetworkManagerQtWindow(QMainWindow):
             raise TypeError("Network state loader did not return a snapshot.")
         self.adapters = state.adapters
         self.routes = state.routes
+        self.nat_rules = state.nat_rules
         self.global_forwarding_enabled = state.global_forwarding_enabled
         self._refresh_global_forwarding_controls()
         self._refresh_loopback_suggestion()
         self._populate_adapters()
         self._populate_routes()
-        self.statusBar().showMessage(f"Loaded {len(self.adapters)} adapters and {len(self.routes)} routes.")
+        self._populate_nat_rules()
+        self.statusBar().showMessage(
+            f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, and {len(self.nat_rules)} NAT rules."
+        )
         self._log(f"Refreshed state from the {self.manager.backend_name} backend.")
 
     def _populate_adapters(self) -> None:
@@ -608,6 +676,39 @@ class NetworkManagerQtWindow(QMainWindow):
         if self.route_table.currentRow() < 0 and self.routes:
             self.route_table.selectRow(0)
 
+    def _populate_nat_rules(self) -> None:
+        selected = self._selected_nat_rule()
+        selected_key = selected.name if selected else ""
+        header = self.nat_table.horizontalHeader()
+        section = header.sortIndicatorSection() if header.sortIndicatorSection() >= 0 else 0
+        order = header.sortIndicatorOrder()
+
+        self.nat_table.setSortingEnabled(False)
+        self.nat_table.setRowCount(len(self.nat_rules))
+        sort_columns = ["name", "source_cidr", "outbound_interface", "enabled", "persistent", "managed"]
+        for row, rule in enumerate(self.nat_rules):
+            values = [
+                rule.name,
+                rule.source_cidr,
+                rule.outbound_interface,
+                _format_bool(rule.enabled),
+                _format_bool(rule.persistent),
+                _format_bool(rule.managed),
+            ]
+            for column, value in enumerate(values):
+                item = _table_item(
+                    value,
+                    nat_sort_key(rule, sort_by=sort_columns[column]),
+                    index=row,
+                    key=rule.name,
+                )
+                self.nat_table.setItem(row, column, item)
+        self.nat_table.setSortingEnabled(True)
+        self.nat_table.sortItems(section, order)
+        self._select_table_key(self.nat_table, selected_key)
+        if self.nat_table.currentRow() < 0 and self.nat_rules:
+            self.nat_table.selectRow(0)
+
     def _select_table_key(self, table: QTableWidget, key: str) -> None:
         if not key:
             return
@@ -641,6 +742,15 @@ class NetworkManagerQtWindow(QMainWindow):
         self.route_gateway_edit.setText(route.gateway)
         self.route_interface_edit.setText(route.interface)
         self.route_metric_edit.setText("" if route.metric is None else str(route.metric))
+
+    def _on_nat_select(self) -> None:
+        rule = self._selected_nat_rule()
+        if rule is None:
+            return
+        self.nat_name_edit.setText(rule.name)
+        self.nat_source_edit.setText(rule.source_cidr)
+        self.nat_outbound_edit.setText(rule.outbound_interface)
+        self.nat_enabled_check.setChecked(rule.enabled)
 
     def apply_selected_adapter(self) -> None:
         adapter = self._selected_adapter()
@@ -748,6 +858,49 @@ class NetworkManagerQtWindow(QMainWindow):
             return
         self._confirm_and_run(plan)
 
+    def add_nat_rule(self) -> None:
+        try:
+            plan = self.manager.plan_create_nat_rule(
+                self.nat_name_edit.text(),
+                self.nat_source_edit.text(),
+                outbound_interface=self.nat_outbound_edit.text(),
+                enabled=self.nat_enabled_check.isChecked(),
+            )
+        except (ValueError, BackendError) as exc:
+            self._error("Invalid NAT Rule", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def update_selected_nat_rule(self) -> None:
+        old_rule = self._selected_nat_rule()
+        if old_rule is None:
+            self._info("No NAT Rule Selected", "Select a NAT rule first.")
+            return
+        try:
+            plan = self.manager.plan_update_nat_rule(
+                old_rule,
+                self.nat_name_edit.text(),
+                self.nat_source_edit.text(),
+                outbound_interface=self.nat_outbound_edit.text(),
+                enabled=self.nat_enabled_check.isChecked(),
+            )
+        except (ValueError, BackendError, LookupError) as exc:
+            self._error("Invalid NAT Rule", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def delete_selected_nat_rule(self) -> None:
+        rule = self._selected_nat_rule()
+        if rule is None:
+            self._info("No NAT Rule Selected", "Select a NAT rule first.")
+            return
+        try:
+            plan = self.manager.plan_delete_nat_rule(rule)
+        except (BackendError, LookupError) as exc:
+            self._error("NAT Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
     def export_current_configuration(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
             self,
@@ -793,7 +946,8 @@ class NetworkManagerQtWindow(QMainWindow):
             f"Source platform: {snapshot.platform}\n"
             f"Global IPv4 forwarding: {_format_forwarding(snapshot.global_forwarding_enabled)}\n"
             f"Adapters: {len(snapshot.adapters)}\n"
-            f"Routes: {len(snapshot.routes)}\n\n"
+            f"Routes: {len(snapshot.routes)}\n"
+            f"NAT rules: {len(snapshot.nat_rules)}\n\n"
             "Use Apply Imported Configuration to preview and apply this snapshot."
         )
         self.statusBar().showMessage("Imported configuration snapshot.")
@@ -829,6 +983,7 @@ class NetworkManagerQtWindow(QMainWindow):
             platform=self.manager.backend_name,
             adapters=self.adapters or self.manager.list_adapters(),
             routes=self.routes or self.manager.list_routes(),
+            nat_rules=self.nat_rules or self.manager.list_nat_rules(),
             global_forwarding_enabled=(
                 self.global_forwarding_enabled
                 if self.global_forwarding_enabled is not None
@@ -983,6 +1138,21 @@ class NetworkManagerQtWindow(QMainWindow):
         except (IndexError, ValueError):
             return None
 
+    def _selected_nat_rule(self) -> NatRule | None:
+        row = self.nat_table.currentRow()
+        if row < 0:
+            return None
+        item = self.nat_table.item(row, 0)
+        if item is None:
+            return None
+        index = item.data(INDEX_ROLE)
+        if index is None:
+            return None
+        try:
+            return self.nat_rules[int(index)]
+        except (IndexError, ValueError):
+            return None
+
     def _refresh_loopback_suggestion(self) -> None:
         current = self.loopback_name_edit.text().strip()
         if current and current != self._last_suggested_loopback_value:
@@ -1048,6 +1218,10 @@ def _format_forwarding(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"
+
+
+def _format_bool(value: bool) -> str:
+    return "Yes" if value else "No"
 
 
 def _route_key(route: RouteInfo | None) -> str:

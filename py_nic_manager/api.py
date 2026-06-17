@@ -11,12 +11,13 @@ from .admin import is_admin as default_admin_checker
 from .backends import BaseBackend, get_backend
 from .io import export_snapshot as write_snapshot
 from .io import import_snapshot as read_snapshot
-from .models import AdapterInfo, AddressInfo, CommandResult, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
 
 AdapterRef = AdapterInfo | str | int
 RouteRef = RouteInfo | str
+NatRef = NatRule | str
 SnapshotRef = NetworkSnapshot | str | Path
 
 ADAPTER_SORT_COLUMNS = {"index", "name", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind"}
@@ -30,6 +31,7 @@ ROUTE_SORT_COLUMNS = {
     "protocol",
     "table",
 }
+NAT_SORT_COLUMNS = {"name", "source_cidr", "outbound_interface", "enabled", "persistent", "managed"}
 
 
 class PrivilegeError(PermissionError):
@@ -75,20 +77,28 @@ class NetworkManager:
             return routes
         return sort_routes(routes, sort_by=sort_by, descending=descending)
 
+    def list_nat_rules(self, *, sort_by: str | None = None, descending: bool = False) -> list[NatRule]:
+        rules = self.backend.list_nat_rules()
+        if sort_by is None:
+            return rules
+        return sort_nat_rules(rules, sort_by=sort_by, descending=descending)
+
     def get_global_forwarding_enabled(self) -> bool | None:
         return self.backend.get_global_forwarding_enabled()
 
     def get_snapshot(self, *, concurrent: bool = True) -> NetworkSnapshot:
         if not concurrent:
             return self.backend.get_snapshot()
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             adapters_future = executor.submit(self.backend.list_adapters)
             routes_future = executor.submit(self.backend.list_routes)
+            nat_future = executor.submit(self.backend.list_nat_rules)
             global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
             return NetworkSnapshot(
                 platform=self.backend.name,
                 adapters=adapters_future.result(),
                 routes=routes_future.result(),
+                nat_rules=nat_future.result(),
                 global_forwarding_enabled=global_forwarding_future.result(),
             )
 
@@ -165,6 +175,16 @@ class NetworkManager:
         if len(matches) > 1:
             raise LookupError("Route selector is ambiguous; specify gateway and interface.")
         return matches[0]
+
+    def find_nat_rule(self, rule: NatRef) -> NatRule:
+        if isinstance(rule, NatRule):
+            return rule
+        text = str(rule).strip()
+        lowered = text.lower()
+        for current in self.backend.list_nat_rules():
+            if current.name == text or current.name.lower() == lowered:
+                return current
+        raise LookupError(f"NAT rule not found: {text}")
 
     def suggest_loopback_value(self, adapters: list[AdapterInfo] | None = None) -> str:
         return suggest_loopback_value(self.backend.name, adapters or self.backend.list_adapters())
@@ -391,6 +411,88 @@ class NetworkManager:
             require_admin=require_admin,
         )
 
+    def plan_create_nat_rule(
+        self,
+        name: str,
+        source_cidr: str,
+        *,
+        outbound_interface: str = "",
+        enabled: bool = True,
+    ) -> OperationPlan:
+        return self.backend.plan_nat_create(
+            _coerce_nat_rule(
+                name,
+                source_cidr,
+                outbound_interface=outbound_interface,
+                enabled=enabled,
+            )
+        )
+
+    def create_nat_rule(
+        self,
+        name: str,
+        source_cidr: str,
+        *,
+        outbound_interface: str = "",
+        enabled: bool = True,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_create_nat_rule(
+                name,
+                source_cidr,
+                outbound_interface=outbound_interface,
+                enabled=enabled,
+            ),
+            require_admin=require_admin,
+        )
+
+    def plan_update_nat_rule(
+        self,
+        old_rule: NatRef,
+        name: str,
+        source_cidr: str,
+        *,
+        outbound_interface: str = "",
+        enabled: bool = True,
+    ) -> OperationPlan:
+        return self.backend.plan_nat_update(
+            self.find_nat_rule(old_rule),
+            _coerce_nat_rule(
+                name,
+                source_cidr,
+                outbound_interface=outbound_interface,
+                enabled=enabled,
+            ),
+        )
+
+    def update_nat_rule(
+        self,
+        old_rule: NatRef,
+        name: str,
+        source_cidr: str,
+        *,
+        outbound_interface: str = "",
+        enabled: bool = True,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_update_nat_rule(
+                old_rule,
+                name,
+                source_cidr,
+                outbound_interface=outbound_interface,
+                enabled=enabled,
+            ),
+            require_admin=require_admin,
+        )
+
+    def plan_delete_nat_rule(self, rule: NatRef) -> OperationPlan:
+        return self.backend.plan_nat_delete(self.find_nat_rule(rule))
+
+    def delete_nat_rule(self, rule: NatRef, *, require_admin: bool = True) -> list[CommandResult]:
+        return self.run_plan(self.plan_delete_nat_rule(rule), require_admin=require_admin)
+
     def run_plan(self, plan: OperationPlan, *, require_admin: bool = True) -> list[CommandResult]:
         if require_admin and not self.backend.dry_run and not self.is_admin:
             raise PrivilegeError(
@@ -433,6 +535,17 @@ def sort_routes(
     return sorted(routes, key=lambda route: route_sort_key(route, sort_by=sort_by), reverse=descending)
 
 
+def sort_nat_rules(
+    rules: list[NatRule],
+    *,
+    sort_by: str = "name",
+    descending: bool = False,
+) -> list[NatRule]:
+    if sort_by not in NAT_SORT_COLUMNS:
+        raise ValueError(f"Unsupported NAT sort column: {sort_by}")
+    return sorted(rules, key=lambda rule: nat_sort_key(rule, sort_by=sort_by), reverse=descending)
+
+
 def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int = 0) -> tuple:
     if sort_by == "index":
         return (0, int(index))
@@ -467,6 +580,18 @@ def route_sort_key(route: RouteInfo, *, sort_by: str = "destination") -> tuple:
         "interface": route.interface,
         "protocol": route.protocol,
         "table": route.table,
+    }
+    return _text_sort_key(values.get(sort_by, ""))
+
+
+def nat_sort_key(rule: NatRule, *, sort_by: str = "name") -> tuple:
+    if sort_by == "source_cidr":
+        return _network_sort_key(rule.source_cidr)
+    if sort_by in {"enabled", "persistent", "managed"}:
+        return (0, 0 if getattr(rule, sort_by) else 1)
+    values = {
+        "name": rule.name,
+        "outbound_interface": rule.outbound_interface,
     }
     return _text_sort_key(values.get(sort_by, ""))
 
@@ -545,6 +670,24 @@ def _coerce_route(
     )
 
 
+def _coerce_nat_rule(
+    name: str,
+    source_cidr: str,
+    *,
+    outbound_interface: str = "",
+    enabled: bool = True,
+) -> NatRule:
+    return NatRule(
+        name=name.strip(),
+        source_cidr=validate_network(source_cidr),
+        outbound_interface=outbound_interface.strip(),
+        enabled=bool(enabled),
+        persistent=True,
+        managed=True,
+        family="ipv4",
+    )
+
+
 def _first_ipv4(adapter: AdapterInfo) -> AddressInfo | None:
     return next((item for item in adapter.addresses if item.family.lower() == "ipv4"), None)
 
@@ -611,15 +754,19 @@ def _text_sort_key(value: str) -> tuple[int, str]:
 
 __all__ = [
     "ADAPTER_SORT_COLUMNS",
+    "NAT_SORT_COLUMNS",
     "ROUTE_SORT_COLUMNS",
     "AdapterRef",
+    "NatRef",
     "NetworkManager",
     "PrivilegeError",
     "RouteRef",
     "SnapshotRef",
     "adapter_sort_key",
+    "nat_sort_key",
     "route_sort_key",
     "sort_adapters",
+    "sort_nat_rules",
     "sort_routes",
     "suggest_loopback_value",
 ]

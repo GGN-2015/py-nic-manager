@@ -25,6 +25,9 @@ print("Global IPv4 forwarding:", manager.get_global_forwarding_enabled())
 
 for route in manager.list_routes(sort_by="destination"):
     print(route.destination, route.gateway, route.interface, route.effective_metric)
+
+for rule in manager.list_nat_rules(sort_by="source_cidr"):
+    print(rule.name, rule.source_cidr, rule.outbound_interface)
 ```
 
 Preview a change before running it:
@@ -55,6 +58,7 @@ Common data classes are also exported from `py_nic_manager`:
 - `AdapterInfo`
 - `AddressInfo`
 - `RouteInfo`
+- `NatRule`
 - `NetworkSnapshot`
 - `OperationPlan`
 - `CommandResult`
@@ -87,6 +91,7 @@ Viewing and lookup:
 
 - `list_adapters(sort_by=None, descending=False)`
 - `list_routes(sort_by=None, descending=False)`
+- `list_nat_rules(sort_by=None, descending=False)`
 - `get_global_forwarding_enabled()`
 - `get_snapshot(concurrent=True)`
 - `find_adapter(adapter)`
@@ -127,6 +132,15 @@ Routes:
 - `plan_delete_route(route, gateway="", interface="")`
 - `delete_route(route, gateway="", interface="", require_admin=True)`
 
+NAT:
+
+- `plan_create_nat_rule(name, source_cidr, outbound_interface="", enabled=True)`
+- `create_nat_rule(name, source_cidr, outbound_interface="", enabled=True, require_admin=True)`
+- `plan_update_nat_rule(old_rule, name, source_cidr, outbound_interface="", enabled=True)`
+- `update_nat_rule(old_rule, name, source_cidr, outbound_interface="", enabled=True, require_admin=True)`
+- `plan_delete_nat_rule(rule)`
+- `delete_nat_rule(rule, require_admin=True)`
+
 Plan execution:
 
 - `run_plan(plan, require_admin=True)`
@@ -163,6 +177,15 @@ Route sort columns:
 - `protocol`
 - `table`
 
+NAT sort columns:
+
+- `name`
+- `source_cidr`
+- `outbound_interface`
+- `enabled`
+- `persistent`
+- `managed`
+
 Examples:
 
 ```python
@@ -173,6 +196,8 @@ routes = manager.list_routes(sort_by="effective_metric")
 IPv4 route destinations are sorted as `(address_as_32_bit_integer, prefix)`.
 Numeric route metrics are sorted as integers, and text fields are sorted
 case-insensitively.
+
+NAT source CIDRs use the same network sort behavior as route destinations.
 
 ## Snapshots
 
@@ -363,6 +388,47 @@ manager.delete_route(
 
 If a route selector matches more than one route, the API raises `LookupError`.
 Pass `gateway` and `interface` to make the selector unambiguous.
+
+## NAT Operations
+
+View NAT rules:
+
+```python
+for rule in manager.list_nat_rules():
+    print(rule.name, rule.source_cidr, rule.outbound_interface, rule.persistent)
+```
+
+Create or update a persistent NAT rule:
+
+```python
+plan = manager.plan_create_nat_rule(
+    "lab-nat",
+    "192.168.56.0/24",
+    outbound_interface="Ethernet",
+)
+print(plan.as_text())
+results = manager.create_nat_rule(
+    "lab-nat",
+    "192.168.56.0/24",
+    outbound_interface="Ethernet",
+)
+```
+
+Delete a NAT rule:
+
+```python
+manager.delete_nat_rule("lab-nat")
+```
+
+On supported platforms, NAT create/update/delete operations are immediate and
+persistent after the command plan succeeds. Windows uses persistent WinNAT.
+Linux writes `/etc/py-nic-manager/nat-rules.json`, reapplies iptables
+MASQUERADE rules immediately, and installs a systemd boot service. macOS writes
+a persistent `pf` anchor and reloads `pf` immediately. If the backend cannot
+make the rule persistent, the command fails rather than reporting success.
+
+Rules discovered at runtime but not managed by Py NIC Manager may be shown with
+`managed=False`; snapshot apply does not delete those external rules.
 
 ## Running Plans
 

@@ -140,10 +140,45 @@ class RouteInfo:
 
 
 @dataclass(slots=True)
+class NatRule:
+    name: str
+    source_cidr: str
+    outbound_interface: str = ""
+    enabled: bool = True
+    persistent: bool = True
+    managed: bool = True
+    family: str = "ipv4"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "NatRule":
+        return cls(
+            name=str(data.get("name", "")),
+            source_cidr=str(data.get("source_cidr", "")),
+            outbound_interface=str(data.get("outbound_interface", "")),
+            enabled=bool(_optional_bool(data.get("enabled")) if data.get("enabled") is not None else True),
+            persistent=bool(_optional_bool(data.get("persistent")) if data.get("persistent") is not None else True),
+            managed=bool(_optional_bool(data.get("managed")) if data.get("managed") is not None else True),
+            family=str(data.get("family", "ipv4")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "source_cidr": self.source_cidr,
+            "outbound_interface": self.outbound_interface,
+            "enabled": self.enabled,
+            "persistent": self.persistent,
+            "managed": self.managed,
+            "family": self.family,
+        }
+
+
+@dataclass(slots=True)
 class NetworkSnapshot:
     platform: str
     adapters: list[AdapterInfo]
     routes: list[RouteInfo]
+    nat_rules: list[NatRule] = field(default_factory=list)
     global_forwarding_enabled: bool | None = None
     captured_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -168,6 +203,11 @@ class NetworkSnapshot:
                 for item in data.get("routes", [])
                 if isinstance(item, dict)
             ],
+            nat_rules=[
+                NatRule.from_dict(item)
+                for item in data.get("nat_rules", [])
+                if isinstance(item, dict)
+            ],
             global_forwarding_enabled=_optional_bool(data.get("global_forwarding_enabled")),
         )
 
@@ -179,6 +219,7 @@ class NetworkSnapshot:
             "global_forwarding_enabled": self.global_forwarding_enabled,
             "adapters": [item.to_dict() for item in self.adapters],
             "routes": [item.to_dict() for item in self.routes],
+            "nat_rules": [item.to_dict() for item in self.nat_rules],
         }
 
 

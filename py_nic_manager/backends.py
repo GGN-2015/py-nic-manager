@@ -6,13 +6,14 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from .models import AdapterInfo, AddressInfo, CommandResult, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
 from .validation import netmask_to_prefix, normalize_mac, prefix_to_netmask
 
 
@@ -32,6 +33,10 @@ class BaseBackend(ABC):
 
     @abstractmethod
     def list_routes(self) -> list[RouteInfo]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_nat_rules(self) -> list[NatRule]:
         raise NotImplementedError
 
     @abstractmethod
@@ -78,17 +83,37 @@ class BaseBackend(ABC):
     def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
         raise NotImplementedError
 
+    @abstractmethod
+    def plan_nat_create(self, rule: NatRule) -> OperationPlan:
+        raise NotImplementedError
+
+    @abstractmethod
+    def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
+        raise NotImplementedError
+
+    def plan_nat_update(self, old_rule: NatRule, new_rule: NatRule) -> OperationPlan:
+        delete_plan = self.plan_nat_delete(old_rule)
+        create_plan = self.plan_nat_create(new_rule)
+        return OperationPlan(
+            "Update NAT rule",
+            delete_plan.commands + create_plan.commands,
+            delete_plan.notes + create_plan.notes,
+            restart_required=delete_plan.restart_required or create_plan.restart_required,
+        )
+
     def get_snapshot(self) -> NetworkSnapshot:
         return NetworkSnapshot(
             platform=self.name,
             adapters=self.list_adapters(),
             routes=self.list_routes(),
+            nat_rules=self.list_nat_rules(),
             global_forwarding_enabled=self.get_global_forwarding_enabled(),
         )
 
     def plan_snapshot_apply(self, snapshot: NetworkSnapshot) -> OperationPlan:
         current_adapters = self.list_adapters()
         current_routes = [route for route in self.list_routes() if route.family.lower() == "ipv4"]
+        current_nat_rules = [rule for rule in self.list_nat_rules() if rule.family.lower() == "ipv4" and rule.managed]
         adapters_by_id = {adapter.id: adapter for adapter in current_adapters}
         adapters_by_name = {adapter.name: adapter for adapter in current_adapters}
         commands: list[list[str]] = []
@@ -145,6 +170,24 @@ class BaseBackend(ABC):
         for route in target_routes:
             if _route_key(route) not in current_route_keys:
                 plan = self.plan_route_add(route)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
+
+        target_nat_rules = [rule for rule in snapshot.nat_rules if rule.family.lower() == "ipv4" and rule.managed]
+        target_nat_keys = {_nat_key(rule) for rule in target_nat_rules}
+        current_nat_keys = {_nat_key(rule) for rule in current_nat_rules}
+
+        for rule in current_nat_rules:
+            if _nat_key(rule) not in target_nat_keys:
+                plan = self.plan_nat_delete(rule)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
+
+        for rule in target_nat_rules:
+            if _nat_key(rule) not in current_nat_keys:
+                plan = self.plan_nat_create(rule)
                 commands.extend(plan.commands)
                 notes.extend(plan.notes)
                 restart_required = restart_required or plan.restart_required
@@ -296,6 +339,25 @@ Get-NetRoute -AddressFamily IPv4 |
 """
         data = self.run_json(_powershell(script))
         return [RouteInfo.from_dict(item) for item in _as_list(data)]
+
+    def list_nat_rules(self) -> list[NatRule]:
+        script = r"""
+Get-NetNat -ErrorAction SilentlyContinue |
+  Sort-Object -Property Name |
+  ForEach-Object {
+    [pscustomobject]@{
+      name = [string]$_.Name
+      source_cidr = [string]$_.InternalIPInterfaceAddressPrefix
+      outbound_interface = [string]$_.ExternalIPInterfaceAddressPrefix
+      enabled = [bool]($true)
+      persistent = [bool]($true)
+      managed = [bool]($true)
+      family = "ipv4"
+    }
+  } | ConvertTo-Json -Depth 4
+"""
+        data = self.run_json(_powershell(script))
+        return [NatRule.from_dict(item) for item in _as_list(data)]
 
     def plan_adapter_update(
         self,
@@ -458,6 +520,37 @@ New-ItemProperty `
             restart_required=True,
         )
 
+    def plan_nat_create(self, rule: NatRule) -> OperationPlan:
+        source = _validate_nat_source(rule.source_cidr)
+        name = rule.name.strip()
+        if not name:
+            raise BackendError("A NAT rule name is required.")
+        external = (
+            f' -ExternalIPInterfaceAddressPrefix "{_ps_escape(rule.outbound_interface.strip())}"'
+            if rule.outbound_interface.strip()
+            else ""
+        )
+        script = (
+            f'Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue | '
+            "Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue\n"
+            f'New-NetNat -Name "{_ps_escape(name)}" '
+            f'-InternalIPInterfaceAddressPrefix "{_ps_escape(source)}"{external}'
+        )
+        notes = [
+            "Windows WinNAT rules are persistent.",
+            "Windows WinNAT selects the external route by the system route table; an external prefix can be supplied when needed.",
+        ]
+        if not rule.enabled:
+            notes.append("WinNAT does not support disabled stored NAT rules; this rule will be created enabled.")
+        return OperationPlan("Create NAT rule", [_powershell(script)], notes)
+
+    def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
+        name = rule.name.strip()
+        if not name:
+            raise BackendError("A NAT rule name is required.")
+        script = f'Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue | Remove-NetNat -Confirm:$false'
+        return OperationPlan("Delete NAT rule", [_powershell(script)])
+
 
 class LinuxBackend(BaseBackend):
     name = "Linux"
@@ -516,6 +609,9 @@ class LinuxBackend(BaseBackend):
                 )
             )
         return routes
+
+    def list_nat_rules(self) -> list[NatRule]:
+        return _merge_nat_rules(_load_managed_nat_rules(), self._runtime_nat_rules())
 
     def plan_adapter_update(
         self,
@@ -653,6 +749,21 @@ class LinuxBackend(BaseBackend):
             restart_required=True,
         )
 
+    def plan_nat_create(self, rule: NatRule) -> OperationPlan:
+        return _managed_nat_create_plan(rule, "Linux")
+
+    def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
+        return _managed_nat_delete_plan(rule, "Linux")
+
+    def _runtime_nat_rules(self) -> list[NatRule]:
+        iptables = shutil.which("iptables")
+        if not iptables:
+            return []
+        result = self.run([iptables, "-t", "nat", "-S", "POSTROUTING"])
+        if not result.ok:
+            return []
+        return _parse_iptables_nat_rules(result.stdout)
+
     def _dns_servers_by_iface(self) -> dict[str, list[str]]:
         if shutil.which("resolvectl"):
             result = self.run(["resolvectl", "dns"])
@@ -744,6 +855,9 @@ class MacOSBackend(BaseBackend):
                 )
             )
         return routes
+
+    def list_nat_rules(self) -> list[NatRule]:
+        return _merge_nat_rules(_load_managed_nat_rules(), self._runtime_nat_rules())
 
     def plan_adapter_update(
         self,
@@ -856,6 +970,18 @@ class MacOSBackend(BaseBackend):
             restart_required=True,
         )
 
+    def plan_nat_create(self, rule: NatRule) -> OperationPlan:
+        return _managed_nat_create_plan(rule, "macOS")
+
+    def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
+        return _managed_nat_delete_plan(rule, "macOS")
+
+    def _runtime_nat_rules(self) -> list[NatRule]:
+        result = self.run(["pfctl", "-sn"])
+        if not result.ok:
+            return []
+        return _parse_pf_nat_rules(result.stdout)
+
     def _services(self) -> dict[str, str]:
         result = self.run(["networksetup", "-listallhardwareports"])
         if not result.ok:
@@ -937,6 +1063,9 @@ class GenericPosixBackend(BaseBackend):
         if not result.ok:
             raise BackendError(result.summary())
         return _parse_netstat_routes(result.stdout)
+
+    def list_nat_rules(self) -> list[NatRule]:
+        return []
 
     def plan_adapter_update(
         self,
@@ -1023,6 +1152,20 @@ class GenericPosixBackend(BaseBackend):
             [f"Global IPv4 forwarding is not portable on this POSIX system; requested {state}."],
         )
 
+    def plan_nat_create(self, rule: NatRule) -> OperationPlan:
+        return OperationPlan(
+            "Create NAT rule",
+            [],
+            ["Persistent NAT management is only implemented for Windows, Linux, and macOS."],
+        )
+
+    def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
+        return OperationPlan(
+            "Delete NAT rule",
+            [],
+            ["Persistent NAT management is only implemented for Windows, Linux, and macOS."],
+        )
+
 
 class UnsupportedBackend(BaseBackend):
     name = platform.system() or "Unsupported"
@@ -1031,6 +1174,9 @@ class UnsupportedBackend(BaseBackend):
         return []
 
     def list_routes(self) -> list[RouteInfo]:
+        return []
+
+    def list_nat_rules(self) -> list[NatRule]:
         return []
 
     def plan_adapter_update(
@@ -1066,6 +1212,12 @@ class UnsupportedBackend(BaseBackend):
         return None
 
     def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def plan_nat_create(self, rule: NatRule) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
         raise BackendError(f"{self.name} is not supported yet.")
 
 
@@ -1223,6 +1375,144 @@ def _dedupe_commands(commands: Iterable[list[str]]) -> list[list[str]]:
     return unique
 
 
+def _load_managed_nat_rules() -> list[NatRule]:
+    try:
+        from .nat_persistence import load_rules
+
+        return [NatRule.from_dict(item) for item in load_rules()]
+    except Exception:
+        return []
+
+
+def _managed_nat_create_plan(rule: NatRule, platform_name: str) -> OperationPlan:
+    source = _validate_nat_source(rule.source_cidr)
+    name = rule.name.strip()
+    if not name:
+        raise BackendError("A NAT rule name is required.")
+    command = [
+        sys.executable,
+        "-m",
+        "py_nic_manager.nat_persistence",
+        "add",
+        "--name",
+        name,
+        "--source-cidr",
+        source,
+    ]
+    if rule.outbound_interface.strip():
+        command.extend(["--outbound-interface", rule.outbound_interface.strip()])
+    if not rule.enabled:
+        command.append("--disabled")
+    return OperationPlan(
+        "Create NAT rule",
+        [command],
+        [
+            f"{platform_name} NAT rules are stored in /etc/py-nic-manager/nat-rules.json.",
+            "The helper applies the runtime NAT rule and installs startup integration so the rule persists after reboot.",
+        ],
+    )
+
+
+def _managed_nat_delete_plan(rule: NatRule, platform_name: str) -> OperationPlan:
+    name = rule.name.strip()
+    if not name:
+        raise BackendError("A NAT rule name is required.")
+    return OperationPlan(
+        "Delete NAT rule",
+        [[
+            sys.executable,
+            "-m",
+            "py_nic_manager.nat_persistence",
+            "delete",
+            "--name",
+            name,
+        ]],
+        [
+            f"{platform_name} NAT deletion updates the persistent Py NIC Manager NAT store and reapplies runtime NAT rules.",
+        ],
+    )
+
+
+def _validate_nat_source(value: str) -> str:
+    try:
+        return str(ipaddress.ip_network(value.strip(), strict=False))
+    except ValueError as exc:
+        raise BackendError(f"Invalid NAT source CIDR: {value}") from exc
+
+
+def _merge_nat_rules(managed: list[NatRule], runtime: list[NatRule]) -> list[NatRule]:
+    merged: dict[tuple[str, str, str], NatRule] = {}
+    for rule in runtime:
+        merged[(rule.source_cidr.lower(), rule.outbound_interface.lower(), rule.name.lower())] = rule
+    for rule in managed:
+        merged[(rule.source_cidr.lower(), rule.outbound_interface.lower(), rule.name.lower())] = rule
+    return sorted(merged.values(), key=lambda rule: (not rule.managed, rule.name.lower(), rule.source_cidr.lower()))
+
+
+def _parse_iptables_nat_rules(output: str) -> list[NatRule]:
+    rules: list[NatRule] = []
+    index = 0
+    for line in output.splitlines():
+        if not line.startswith("-A POSTROUTING") or "-j MASQUERADE" not in line:
+            continue
+        parts = shlex.split(line)
+        source = _option_value(parts, "-s") or "0.0.0.0/0"
+        outbound = _option_value(parts, "-o")
+        comment = _option_value(parts, "--comment")
+        if comment and comment.startswith("py-nic-manager-nat:"):
+            name = comment.split(":", 1)[1] or f"py-nat-runtime-{index}"
+            managed = True
+        else:
+            name = f"runtime-masquerade-{index}"
+            managed = False
+        rules.append(
+            NatRule(
+                name=name,
+                source_cidr=source,
+                outbound_interface=outbound,
+                enabled=True,
+                persistent=managed,
+                managed=managed,
+            )
+        )
+        index += 1
+    return rules
+
+
+def _parse_pf_nat_rules(output: str) -> list[NatRule]:
+    rules: list[NatRule] = []
+    index = 0
+    for line in output.splitlines():
+        text = line.strip()
+        if not text.startswith("nat "):
+            continue
+        match = re.search(r"\bfrom\s+(\S+)", text)
+        source = match.group(1) if match else "0.0.0.0/0"
+        outbound_match = re.search(r"^nat\s+on\s+(\S+)", text)
+        outbound = outbound_match.group(1) if outbound_match else ""
+        managed = "py-nic-manager" in text
+        rules.append(
+            NatRule(
+                name=f"{'py' if managed else 'runtime'}-pf-nat-{index}",
+                source_cidr=source,
+                outbound_interface=outbound,
+                enabled=True,
+                persistent=managed,
+                managed=managed,
+            )
+        )
+        index += 1
+    return rules
+
+
+def _option_value(parts: list[str], option: str) -> str:
+    try:
+        index = parts.index(option)
+        return parts[index + 1]
+    except (ValueError, IndexError):
+        return ""
+
+
 def _restart_command() -> list[str]:
     system = platform.system().lower()
     if system == "windows":
@@ -1240,6 +1530,15 @@ def _route_key(route: RouteInfo) -> tuple[str, str, str, int | None, int | None,
         route.metric,
         route.interface_metric,
         route.effective_metric,
+    )
+
+
+def _nat_key(rule: NatRule) -> tuple[str, str, str, bool]:
+    return (
+        rule.name.strip().lower(),
+        rule.source_cidr.strip().lower(),
+        rule.outbound_interface.strip().lower(),
+        bool(rule.enabled),
     )
 
 
