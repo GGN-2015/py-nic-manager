@@ -122,7 +122,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("#0", "Adapter", "name")
         self._set_adapter_heading("index", "Index", "index")
         self._set_adapter_heading("status", "Status", "status")
-        self._set_adapter_heading("forwarding", "Forwarding", "forwarding")
+        self._set_adapter_heading("forwarding", "IP Forwarding", "forwarding")
         self._set_adapter_heading("ipv4", "IPv4", "ipv4")
         self._set_adapter_heading("mac", "MAC", "mac")
         self._set_adapter_heading("gateway", "Gateway", "gateway")
@@ -170,7 +170,7 @@ class NetworkManagerApp(tk.Tk):
         self._admin_only_widgets.append(self.adapter_dhcp_check)
         self.adapter_forwarding_check = ttk.Checkbutton(
             panel,
-            text="Enable IPv4 forwarding",
+            text="Enable IPv4 router forwarding",
             variable=self.adapter_forwarding_var,
         )
         self.adapter_forwarding_check.grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -380,7 +380,7 @@ class NetworkManagerApp(tk.Tk):
             "name": ("#0", "Adapter"),
             "index": ("index", "Index"),
             "status": ("status", "Status"),
-            "forwarding": ("forwarding", "Forwarding"),
+            "forwarding": ("forwarding", "IP Forwarding"),
             "ipv4": ("ipv4", "IPv4"),
             "mac": ("mac", "MAC"),
             "gateway": ("gateway", "Gateway"),

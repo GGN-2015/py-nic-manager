@@ -13,7 +13,7 @@ with elevated permissions.
 ## Features
 
 - View network adapters, IPv4 addresses, MAC addresses, gateways, DNS servers,
-  DHCP state, IPv4 forwarding state, and loopback status.
+  DHCP state, IPv4 router-forwarding state, and loopback status.
 - Edit existing adapter IPv4 address, prefix length, gateway, DNS servers, MAC
   address, and DHCP mode where the operating system backend supports it.
 - Create, edit, and delete loopback-style adapters:
@@ -22,8 +22,8 @@ with elevated permissions.
   - Linux: dummy interfaces through `ip link`.
   - macOS and generic POSIX: loopback aliases on `lo0`.
 - View, add, update, and delete IPv4 routes through a visual route table editor.
-- Enable or disable IPv4 forwarding for a selected adapter where the operating
-  system backend supports per-interface forwarding.
+- Enable or disable IPv4 router forwarding for a selected adapter where the
+  operating system backend supports per-interface forwarding.
 - Export the current adapters and routes to a JSON configuration snapshot.
 - Import a saved snapshot and apply it as a best-effort one-click restore after
   previewing the system commands that will run.
@@ -70,6 +70,11 @@ Without elevation, the app can still view adapters/routes and export
 configuration snapshots.
 
 ## Platform Notes
+
+IPv4 router forwarding means the operating system may forward IP packets that
+arrive on one interface and are destined for another host. It is not required
+for ordinary web browsing, Wi-Fi connectivity, DNS, or other traffic generated
+by the local machine.
 
 ### Windows
 
