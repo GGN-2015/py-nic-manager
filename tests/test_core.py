@@ -571,6 +571,7 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     )
     nat_plan = manager.plan_create_nat_rule("nat1", "192.168.10.0/24", outbound_interface="Ethernet")
     delete_nat_plan = manager.plan_delete_nat_rule("nat0")
+    restart_plan = manager.plan_restart_system()
 
     assert loaded.platform == "Windows"
     assert loaded.global_forwarding_enabled is False
@@ -588,9 +589,12 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     assert delete_route_plan.title == "Delete route"
     assert nat_plan.title == "Create NAT rule"
     assert delete_nat_plan.title == "Delete NAT rule"
+    assert restart_plan.title == "Restart system"
 
     results = manager.run_plan(add_route_plan)
     assert all(result.ok for result in results)
+    restart_result = manager.restart_system()
+    assert restart_result.ok
 
 
 def test_python_api_concurrent_snapshot_tolerates_optional_state_failures() -> None:

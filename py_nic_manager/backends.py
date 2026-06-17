@@ -222,8 +222,15 @@ class BaseBackend(ABC):
             results.append(self.run(command))
         return results
 
+    def plan_restart_system(self) -> OperationPlan:
+        return OperationPlan(
+            "Restart system",
+            [_restart_command()],
+            ["Restart the operating system immediately."],
+        )
+
     def restart_system(self) -> CommandResult:
-        return self.run(_restart_command())
+        return self.run_plan(self.plan_restart_system())[0]
 
     def run(self, command: list[str]) -> CommandResult:
         if self.dry_run:

@@ -96,6 +96,7 @@ Viewing and lookup:
 - `get_snapshot(concurrent=True)`
 - `find_adapter(adapter)`
 - `find_route(route, gateway="", interface="")`
+- `find_nat_rule(rule)`
 - `suggest_loopback_value(adapters=None)`
 
 Snapshots:
@@ -144,6 +145,38 @@ NAT:
 Plan execution:
 
 - `run_plan(plan, require_admin=True)`
+- `plan_restart_system()`
+- `restart_system(require_admin=True)`
+
+## GUI Feature Coverage
+
+Every GUI operation has a headless equivalent:
+
+| GUI capability | Headless API |
+| --- | --- |
+| Refresh/view adapters | `list_adapters()`, `get_snapshot()` |
+| Refresh/view routes | `list_routes()`, `get_snapshot()` |
+| Refresh/view NAT rules | `list_nat_rules()`, `get_snapshot()` |
+| View global IPv4 forwarding | `get_global_forwarding_enabled()`, `get_snapshot()` |
+| Sort adapter, route, and NAT tables | `list_adapters(sort_by=...)`, `list_routes(sort_by=...)`, `list_nat_rules(sort_by=...)` |
+| Edit adapter IP, MAC, gateway, DNS, DHCP | `plan_update_adapter()`, `update_adapter()` |
+| Edit loopback configuration | `plan_update_loopback()`, `update_loopback()` |
+| Create loopback | `plan_create_loopback()`, `create_loopback()` |
+| Delete loopback | `plan_delete_loopback()`, `delete_loopback()` |
+| Set per-adapter IPv4 forwarding | `plan_set_adapter_forwarding()`, `set_adapter_forwarding()` |
+| Set global IPv4 forwarding | `plan_set_global_forwarding()`, `set_global_forwarding()` |
+| Restart after a restart-required plan | `plan_restart_system()`, `restart_system()` |
+| Add route | `plan_add_route()`, `add_route()` |
+| Update route | `plan_update_route()`, `update_route()` |
+| Delete route | `plan_delete_route()`, `delete_route()` |
+| Add NAT rule | `plan_create_nat_rule()`, `create_nat_rule()` |
+| Update NAT rule | `plan_update_nat_rule()`, `update_nat_rule()` |
+| Delete NAT rule | `plan_delete_nat_rule()`, `delete_nat_rule()` |
+| Export configuration | `export_snapshot()` |
+| Import configuration | `import_snapshot()` |
+| Apply imported configuration | `plan_apply_snapshot()`, `apply_snapshot()` |
+| Preview command plan | Any `plan_*` method plus `OperationPlan.as_text()` |
+| Execute confirmed plan | `run_plan()` |
 
 ## Viewing Adapters And Routes
 
@@ -452,6 +485,15 @@ for result in results:
 ```
 
 `CommandResult.ok` is true when the command returned exit code `0`.
+
+Restart the host after a restart-required plan:
+
+```python
+plan = manager.plan_set_global_forwarding(True)
+results = manager.run_plan(plan)
+if all(result.ok for result in results) and plan.restart_required:
+    manager.restart_system()
+```
 
 ## Error Handling
 

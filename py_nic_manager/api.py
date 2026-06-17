@@ -493,6 +493,13 @@ class NetworkManager:
     def delete_nat_rule(self, rule: NatRef, *, require_admin: bool = True) -> list[CommandResult]:
         return self.run_plan(self.plan_delete_nat_rule(rule), require_admin=require_admin)
 
+    def plan_restart_system(self) -> OperationPlan:
+        return self.backend.plan_restart_system()
+
+    def restart_system(self, *, require_admin: bool = True) -> CommandResult:
+        results = self.run_plan(self.plan_restart_system(), require_admin=require_admin)
+        return results[0]
+
     def run_plan(self, plan: OperationPlan, *, require_admin: bool = True) -> list[CommandResult]:
         if require_admin and not self.backend.dry_run and not self.is_admin:
             raise PrivilegeError(
