@@ -112,7 +112,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapters_tab.columnconfigure(1, weight=1)
         self.adapters_tab.rowconfigure(0, weight=1)
 
-        columns = ("index", "status", "ipv4", "mac", "gateway", "dns", "kind")
+        columns = ("index", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind")
         self.adapter_tree = ttk.Treeview(
             self.adapters_tab,
             columns=columns,
@@ -122,6 +122,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("#0", "Adapter", "name")
         self._set_adapter_heading("index", "Index", "index")
         self._set_adapter_heading("status", "Status", "status")
+        self._set_adapter_heading("forwarding", "Forwarding", "forwarding")
         self._set_adapter_heading("ipv4", "IPv4", "ipv4")
         self._set_adapter_heading("mac", "MAC", "mac")
         self._set_adapter_heading("gateway", "Gateway", "gateway")
@@ -130,6 +131,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("#0", width=190, minwidth=160)
         self.adapter_tree.column("index", width=70, anchor="center")
         self.adapter_tree.column("status", width=90, anchor="center")
+        self.adapter_tree.column("forwarding", width=105, anchor="center")
         self.adapter_tree.column("ipv4", width=170)
         self.adapter_tree.column("mac", width=145)
         self.adapter_tree.column("gateway", width=140)
@@ -155,6 +157,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_gateway_var = tk.StringVar()
         self.adapter_dns_var = tk.StringVar()
         self.adapter_dhcp_var = tk.BooleanVar(value=False)
+        self.adapter_forwarding_var = tk.BooleanVar(value=True)
 
         self._labeled_entry(panel, "Name", self.adapter_name_var, 1, readonly=True)
         self._labeled_entry(panel, "MAC address", self.adapter_mac_var, 2, admin_required=True)
@@ -165,6 +168,13 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_dhcp_check = ttk.Checkbutton(panel, text="Use DHCP for IPv4", variable=self.adapter_dhcp_var)
         self.adapter_dhcp_check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 10))
         self._admin_only_widgets.append(self.adapter_dhcp_check)
+        self.adapter_forwarding_check = ttk.Checkbutton(
+            panel,
+            text="Enable IPv4 forwarding",
+            variable=self.adapter_forwarding_var,
+        )
+        self.adapter_forwarding_check.grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self._admin_only_widgets.append(self.adapter_forwarding_check)
 
         self.apply_adapter_button = ttk.Button(
             panel,
@@ -172,26 +182,33 @@ class NetworkManagerApp(tk.Tk):
             style="Action.TButton",
             command=self.apply_selected_adapter,
         )
-        self.apply_adapter_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        self.apply_adapter_button.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._admin_only_widgets.append(self.apply_adapter_button)
+        self.apply_forwarding_button = ttk.Button(
+            panel,
+            text="Apply Forwarding",
+            command=self.apply_selected_adapter_forwarding,
+        )
+        self.apply_forwarding_button.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        self._admin_only_widgets.append(self.apply_forwarding_button)
 
-        ttk.Separator(panel).grid(row=9, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Label(panel, text="Loopback", style="Header.TLabel").grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Separator(panel).grid(row=11, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Label(panel, text="Loopback", style="Header.TLabel").grid(row=12, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.loopback_name_var = tk.StringVar(value=_default_loopback_value(self.backend.name))
-        self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 11, admin_required=True)
+        self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 13, admin_required=True)
         self.create_loopback_button = ttk.Button(
             panel,
             text="Create Loopback",
             command=self.create_loopback,
         )
-        self.create_loopback_button.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.create_loopback_button.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._admin_only_widgets.append(self.create_loopback_button)
         self.delete_loopback_button = ttk.Button(
             panel,
             text="Delete Selected Loopback",
             command=self.delete_selected_loopback,
         )
-        self.delete_loopback_button.grid(row=13, column=0, columnspan=2, sticky="ew")
+        self.delete_loopback_button.grid(row=15, column=0, columnspan=2, sticky="ew")
         self._admin_only_widgets.append(self.delete_loopback_button)
 
     def _build_routes_tab(self) -> None:
@@ -340,6 +357,7 @@ class NetworkManagerApp(tk.Tk):
                 values=(
                     index,
                     adapter.status,
+                    _format_forwarding(adapter.forwarding_enabled),
                     _format_address(ipv4),
                     adapter.mac,
                     ", ".join(adapter.gateways),
@@ -362,6 +380,7 @@ class NetworkManagerApp(tk.Tk):
             "name": ("#0", "Adapter"),
             "index": ("index", "Index"),
             "status": ("status", "Status"),
+            "forwarding": ("forwarding", "Forwarding"),
             "ipv4": ("ipv4", "IPv4"),
             "mac": ("mac", "MAC"),
             "gateway": ("gateway", "Gateway"),
@@ -397,6 +416,7 @@ class NetworkManagerApp(tk.Tk):
             "name": adapter.name,
             "index": str(index),
             "status": adapter.status,
+            "forwarding": _format_forwarding(adapter.forwarding_enabled),
             "ipv4": _format_address(ipv4),
             "mac": adapter.mac,
             "gateway": ", ".join(adapter.gateways),
@@ -484,6 +504,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_gateway_var.set(adapter.gateways[0] if adapter.gateways else "")
         self.adapter_dns_var.set(", ".join(adapter.dns_servers))
         self.adapter_dhcp_var.set(bool(adapter.dhcp_enabled))
+        self.adapter_forwarding_var.set(True if adapter.forwarding_enabled is None else adapter.forwarding_enabled)
         if adapter.is_loopback and not self.loopback_name_var.get().strip():
             self.loopback_name_var.set(adapter.name)
 
@@ -515,6 +536,18 @@ class NetworkManagerApp(tk.Tk):
             )
         except (ValueError, BackendError) as exc:
             messagebox.showerror("Invalid Adapter Settings", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def apply_selected_adapter_forwarding(self) -> None:
+        adapter = self._selected_adapter()
+        if adapter is None:
+            messagebox.showinfo("No Adapter Selected", "Select an adapter first.")
+            return
+        try:
+            plan = self.backend.plan_adapter_forwarding_update(adapter, self.adapter_forwarding_var.get())
+        except BackendError as exc:
+            messagebox.showerror("Forwarding Error", str(exc))
             return
         self._confirm_and_run(plan)
 
@@ -845,6 +878,12 @@ def _format_address(address: AddressInfo | None) -> str:
     if address.prefix_length is None:
         return address.address
     return f"{address.address}/{address.prefix_length}"
+
+
+def _format_forwarding(value: bool | None) -> str:
+    if value is None:
+        return "Unknown"
+    return "Enabled" if value else "Disabled"
 
 
 def _default_loopback_value(backend_name: str) -> str:

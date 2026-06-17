@@ -61,6 +61,7 @@ class AdapterInfo:
     dns_servers: list[str] = field(default_factory=list)
     dhcp_enabled: bool | None = None
     is_loopback: bool = False
+    forwarding_enabled: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AdapterInfo":
@@ -79,6 +80,7 @@ class AdapterInfo:
             dns_servers=[str(item) for item in data.get("dns_servers", [])],
             dhcp_enabled=_optional_bool(data.get("dhcp_enabled")),
             is_loopback=bool(data.get("is_loopback", False)),
+            forwarding_enabled=_optional_bool(data.get("forwarding_enabled")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,6 +95,7 @@ class AdapterInfo:
             "dns_servers": self.dns_servers,
             "dhcp_enabled": self.dhcp_enabled,
             "is_loopback": self.is_loopback,
+            "forwarding_enabled": self.forwarding_enabled,
         }
 
 

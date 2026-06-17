@@ -65,6 +65,10 @@ class BaseBackend(ABC):
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:
         raise NotImplementedError
 
+    @abstractmethod
+    def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        raise NotImplementedError
+
     def get_snapshot(self) -> NetworkSnapshot:
         return NetworkSnapshot(
             platform=self.name,
@@ -99,6 +103,10 @@ class BaseBackend(ABC):
             )
             commands.extend(plan.commands)
             notes.extend(plan.notes)
+            if saved.forwarding_enabled is not None:
+                plan = self.plan_adapter_forwarding_update(current, saved.forwarding_enabled)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
 
         target_routes = [route for route in snapshot.routes if route.family.lower() == "ipv4"]
         target_route_keys = {_route_key(route) for route in target_routes}
@@ -192,6 +200,7 @@ class WindowsBackend(BaseBackend):
 $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex | ForEach-Object {
   $adapter = $_
   $config = Get-NetIPConfiguration -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
+  $ipInterface = Get-NetIPInterface -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
   $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
   [pscustomobject]@{
     id = [string]$adapter.PnPDeviceID
@@ -201,6 +210,7 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     status = [string]$adapter.Status
     dhcp_enabled = [bool]($config.NetIPv4Interface.Dhcp -eq "Enabled")
     is_loopback = [bool]($adapter.InterfaceDescription -match "Loopback|KM-TEST|Npcap Loopback")
+    forwarding_enabled = [bool]($ipInterface.Forwarding -eq "Enabled")
     addresses = @($config.IPv4Address | ForEach-Object {
       [pscustomobject]@{
         address = [string]$_.IPAddress
@@ -363,6 +373,14 @@ if ($device) {{
 """
         return OperationPlan("Delete loopback adapter", [_powershell(script)])
 
+    def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        value = "Enabled" if enabled else "Disabled"
+        script = (
+            f'Set-NetIPInterface -InterfaceAlias "{_ps_escape(adapter.name)}" '
+            f'-AddressFamily IPv4 -Forwarding {value}'
+        )
+        return OperationPlan("Update adapter forwarding", [_powershell(script)])
+
 
 class LinuxBackend(BaseBackend):
     name = "Linux"
@@ -399,6 +417,7 @@ class LinuxBackend(BaseBackend):
                     dns_servers=dns_by_iface.get(name, []),
                     dhcp_enabled=None,
                     is_loopback=bool(item.get("link_type") in {"loopback", "dummy"} or name == "lo"),
+                    forwarding_enabled=self._forwarding_enabled(name),
                 )
             )
         return adapters
@@ -526,6 +545,13 @@ class LinuxBackend(BaseBackend):
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:
         return OperationPlan("Delete loopback adapter", [["ip", "link", "delete", adapter.name]])
 
+    def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        value = "1" if enabled else "0"
+        return OperationPlan(
+            "Update adapter forwarding",
+            [["sysctl", "-w", f"net.ipv4.conf.{adapter.name}.forwarding={value}"]],
+        )
+
     def _dns_servers_by_iface(self) -> dict[str, list[str]]:
         if shutil.which("resolvectl"):
             result = self.run(["resolvectl", "dns"])
@@ -544,6 +570,14 @@ class LinuxBackend(BaseBackend):
             if len(parts) >= 2 and parts[-1] == iface:
                 return ":".join(parts[:-1]).replace(r"\:", ":")
         return ""
+
+    def _forwarding_enabled(self, iface: str) -> bool | None:
+        path = f"/proc/sys/net/ipv4/conf/{iface}/forwarding"
+        try:
+            with open(path, encoding="ascii") as handle:
+                return handle.read().strip() == "1"
+        except OSError:
+            return None
 
 
 class MacOSBackend(BaseBackend):
@@ -685,6 +719,14 @@ class MacOSBackend(BaseBackend):
             raise BackendError("The primary loopback address cannot be deleted.")
         return OperationPlan("Delete loopback alias", [["ifconfig", "lo0", "-alias", address]])
 
+    def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "enabled" if enabled else "disabled"
+        return OperationPlan(
+            "Update adapter forwarding",
+            [],
+            [f"Per-interface IPv4 forwarding cannot be changed generically on macOS; requested {state}."],
+        )
+
     def _services(self) -> dict[str, str]:
         result = self.run(["networksetup", "-listallhardwareports"])
         if not result.ok:
@@ -819,6 +861,14 @@ class GenericPosixBackend(BaseBackend):
             raise BackendError("The primary loopback address cannot be deleted.")
         return OperationPlan("Delete loopback alias", [["ifconfig", "lo0", "-alias", address]])
 
+    def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "enabled" if enabled else "disabled"
+        return OperationPlan(
+            "Update adapter forwarding",
+            [],
+            [f"Per-interface IPv4 forwarding is not portable on this POSIX system; requested {state}."],
+        )
+
 
 class UnsupportedBackend(BaseBackend):
     name = platform.system() or "Unsupported"
@@ -853,6 +903,9 @@ class UnsupportedBackend(BaseBackend):
         raise BackendError(f"{self.name} is not supported yet.")
 
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         raise BackendError(f"{self.name} is not supported yet.")
 
 

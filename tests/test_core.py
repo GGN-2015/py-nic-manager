@@ -53,6 +53,14 @@ def test_snapshot_round_trip(tmp_path) -> None:
     assert loaded.routes[0].effective_metric is None
 
 
+def test_adapter_forwarding_round_trip() -> None:
+    adapter = AdapterInfo(id="eth0", name="eth0", forwarding_enabled=False)
+
+    loaded = AdapterInfo.from_dict(adapter.to_dict())
+
+    assert loaded.forwarding_enabled is False
+
+
 def test_route_metrics_round_trip() -> None:
     route = RouteInfo(
         "0.0.0.0/0",
@@ -147,6 +155,17 @@ def test_windows_loopback_plan_uses_packaged_setupapi_helper() -> None:
     assert "devcon" not in rendered.lower()
 
 
+def test_windows_forwarding_plan_uses_netipinterface() -> None:
+    backend = WindowsBackend(dry_run=True)
+    adapter = AdapterInfo(id="id", name="Ethernet")
+
+    plan = backend.plan_adapter_forwarding_update(adapter, False)
+    rendered = " ".join(plan.commands[0])
+
+    assert "Set-NetIPInterface" in rendered
+    assert "-Forwarding Disabled" in rendered
+
+
 def test_linux_route_plan_uses_ipv4_ip_route() -> None:
     backend = LinuxBackend(dry_run=True)
     route = RouteInfo("198.51.100.0/24", "192.0.2.1", "eth0", 5)
@@ -156,6 +175,15 @@ def test_linux_route_plan_uses_ipv4_ip_route() -> None:
     assert plan.commands == [
         ["ip", "-4", "route", "replace", "198.51.100.0/24", "via", "192.0.2.1", "dev", "eth0", "metric", "5"]
     ]
+
+
+def test_linux_forwarding_plan_uses_sysctl() -> None:
+    backend = LinuxBackend(dry_run=True)
+    adapter = AdapterInfo(id="eth0", name="eth0")
+
+    plan = backend.plan_adapter_forwarding_update(adapter, False)
+
+    assert plan.commands == [["sysctl", "-w", "net.ipv4.conf.eth0.forwarding=0"]]
 
 
 def test_macos_loopback_create_uses_alias_address() -> None:
