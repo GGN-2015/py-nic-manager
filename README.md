@@ -17,7 +17,8 @@ with elevated permissions.
 - Edit existing adapter IPv4 address, prefix length, gateway, DNS servers, MAC
   address, and DHCP mode where the operating system backend supports it.
 - Create, edit, and delete loopback-style adapters:
-  - Windows: Microsoft KM-TEST Loopback Adapter through `devcon.exe`.
+  - Windows: Microsoft KM-TEST Loopback Adapter through the built-in
+    `netloop.inf` driver and Windows SetupAPI.
   - Linux: dummy interfaces through `ip link`.
   - macOS and generic POSIX: loopback aliases on `lo0`.
 - View, add, update, and delete IPv4 routes through a visual route table editor.
@@ -71,11 +72,11 @@ configuration snapshots.
 ### Windows
 
 The Windows backend uses PowerShell networking cmdlets, `netsh`, `route`, and
-`pnputil`.
+Windows SetupAPI/NewDev calls through `ctypes`.
 
-Creating a Microsoft KM-TEST Loopback Adapter requires `devcon.exe` from the
-Windows Driver Kit to be available on `PATH`. Windows does not provide a simple
-built-in `netsh` command that reliably creates this adapter on every version.
+Creating a Microsoft KM-TEST Loopback Adapter uses the built-in
+`%WINDIR%\inf\netloop.inf` driver directly. It does not require `devcon.exe` or
+the Windows Driver Kit.
 
 ### Linux
 
@@ -144,4 +145,3 @@ Network configuration changes can disconnect the machine, break DNS resolution,
 or remove routes that are needed for remote access. Always review the command
 preview before applying changes, and export a known-good snapshot before making
 large edits.
-

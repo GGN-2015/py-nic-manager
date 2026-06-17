@@ -7,6 +7,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
@@ -328,26 +329,16 @@ Get-NetRoute -AddressFamily IPv4 |
         return OperationPlan("Add route", [command])
 
     def plan_loopback_create(self, name: str) -> OperationPlan:
-        script = rf"""
-$devcon = Get-Command devcon.exe, devcon64.exe, devcon32.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $devcon) {{
-  throw "Creating a Windows KM-TEST Loopback Adapter requires devcon.exe from the Windows Driver Kit to be available on PATH."
-}}
-$inf = Join-Path $env:windir "inf\netloop.inf"
-& $devcon.Source install $inf *msloop
-Start-Sleep -Seconds 2
-$adapter = Get-NetAdapter -IncludeHidden |
-  Where-Object {{ $_.InterfaceDescription -match "Loopback|KM-TEST" }} |
-  Sort-Object -Property InterfaceIndex -Descending |
-  Select-Object -First 1
-if ($adapter -and "{_ps_escape(name)}") {{
-  Rename-NetAdapter -Name $adapter.Name -NewName "{_ps_escape(name)}" -Confirm:$false
-}}
-"""
+        command = [sys.executable, "-m", "py_nic_manager.windows_loopback", "create"]
+        if name.strip():
+            command.extend(["--name", name.strip()])
         return OperationPlan(
             "Create loopback adapter",
-            [_powershell(script)],
-            ["Windows creates a Microsoft KM-TEST Loopback Adapter using the built-in netloop driver."],
+            [command],
+            [
+                "Windows creates a Microsoft KM-TEST Loopback Adapter with the built-in netloop driver.",
+                "This uses Windows SetupAPI directly and does not require devcon.exe or the Windows Driver Kit.",
+            ],
         )
 
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:

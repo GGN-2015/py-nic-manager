@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from py_nic_manager.backends import LinuxBackend, MacOSBackend, WindowsBackend, decode_command_output
 from py_nic_manager.io import import_snapshot
@@ -64,6 +65,18 @@ def test_windows_adapter_plan_contains_netsh_and_mac_property() -> None:
 
     assert ["netsh", "interface", "ip", "set", "address", "name=Ethernet", "static", "192.0.2.10", "255.255.255.0", "192.0.2.1", "1"] in plan.commands
     assert any("Set-NetAdapterAdvancedProperty" in " ".join(command) for command in plan.commands)
+
+
+def test_windows_loopback_plan_uses_packaged_setupapi_helper() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    plan = backend.plan_loopback_create("py-loopback0")
+
+    rendered = " ".join(plan.commands[0])
+    assert plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_loopback", "create"]
+    assert "--name" in plan.commands[0]
+    assert "py-loopback0" in plan.commands[0]
+    assert "devcon" not in rendered.lower()
 
 
 def test_linux_route_plan_uses_ipv4_ip_route() -> None:
