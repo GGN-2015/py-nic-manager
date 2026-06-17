@@ -313,6 +313,11 @@ results = manager.add_route(
 )
 ```
 
+On Linux, IPv4 link-local gateways such as `169.254.x.x` are automatically
+planned with `onlink` when an interface is supplied. That keeps API behavior in
+line with the GUI and avoids `Nexthop has invalid gateway` for same-link
+gateways.
+
 Update a route:
 
 ```python

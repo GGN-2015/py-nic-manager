@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import locale
 import json
 import os
@@ -491,7 +492,7 @@ class LinuxBackend(BaseBackend):
             commands.append(["ip", "addr", "add", f"{address.address}/{address.prefix_length or 24}", "dev", iface])
             commands.append(["ip", "link", "set", "dev", iface, "up"])
             if gateway:
-                commands.append(["ip", "-4", "route", "replace", "default", "via", gateway, "dev", iface])
+                commands.append(_linux_route_command("replace", "default", gateway, iface))
         else:
             notes.append("Skipped IP update because no IPv4 address was provided.")
 
@@ -522,11 +523,7 @@ class LinuxBackend(BaseBackend):
         return OperationPlan("Update adapter", commands, notes)
 
     def plan_route_add(self, route: RouteInfo) -> OperationPlan:
-        command = ["ip", "-4", "route", "replace", route.destination]
-        if route.gateway:
-            command.extend(["via", route.gateway])
-        if route.interface:
-            command.extend(["dev", route.interface])
+        command = _linux_route_command("replace", route.destination, route.gateway, route.interface)
         if route.metric is not None:
             command.extend(["metric", str(route.metric)])
         return OperationPlan("Add route", [command])
@@ -1112,6 +1109,25 @@ def _route_key(route: RouteInfo) -> tuple[str, str, str, int | None, int | None,
         route.interface_metric,
         route.effective_metric,
     )
+
+
+def _linux_route_command(action: str, destination: str, gateway: str = "", interface: str = "") -> list[str]:
+    command = ["ip", "-4", "route", action, destination]
+    if gateway:
+        command.extend(["via", gateway])
+    if interface:
+        command.extend(["dev", interface])
+    if gateway and interface and _is_ipv4_link_local(gateway):
+        command.append("onlink")
+    return command
+
+
+def _is_ipv4_link_local(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+        return address.version == 4 and address.is_link_local
+    except ValueError:
+        return False
 
 
 def _parse_resolvectl_dns(output: str) -> dict[str, list[str]]:

@@ -312,6 +312,30 @@ def test_linux_route_plan_uses_ipv4_ip_route() -> None:
     ]
 
 
+def test_linux_route_plan_marks_link_local_gateways_onlink() -> None:
+    backend = LinuxBackend(dry_run=True)
+    route = RouteInfo("192.168.0.0/16", "169.254.197.202", "enp0s3", 0)
+
+    plan = backend.plan_route_add(route)
+
+    assert plan.commands == [
+        [
+            "ip",
+            "-4",
+            "route",
+            "replace",
+            "192.168.0.0/16",
+            "via",
+            "169.254.197.202",
+            "dev",
+            "enp0s3",
+            "onlink",
+            "metric",
+            "0",
+        ]
+    ]
+
+
 def test_linux_forwarding_plan_uses_sysctl() -> None:
     backend = LinuxBackend(dry_run=True)
     adapter = AdapterInfo(id="eth0", name="eth0")

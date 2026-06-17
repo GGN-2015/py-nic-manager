@@ -128,6 +128,10 @@ The Linux backend uses `ip` from iproute2. DNS and DHCP persistence are handled
 through NetworkManager (`nmcli`) when available, with `resolvectl` used as a DNS
 fallback.
 
+Routes that use an IPv4 link-local gateway such as `169.254.x.x` are created
+with `onlink` when an interface is selected. This avoids Linux rejecting valid
+same-link gateways with `Nexthop has invalid gateway`.
+
 Loopback-style adapters are implemented as Linux dummy interfaces.
 
 Per-adapter IPv4 router forwarding uses
