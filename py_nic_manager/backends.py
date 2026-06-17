@@ -585,6 +585,8 @@ class MacOSBackend(BaseBackend):
 
     def list_adapters(self) -> list[AdapterInfo]:
         services = self._services()
+        global_forwarding = self._global_forwarding_enabled()
+        disabled_forwarding = self._forwarding_disabled_interfaces()
         adapters: list[AdapterInfo] = []
         for service, device in services.items():
             info = self._networksetup_getinfo(service)
@@ -612,6 +614,11 @@ class MacOSBackend(BaseBackend):
                     dns_servers=self._dns_for_service(service),
                     dhcp_enabled=info["method"].lower() == "dhcp",
                     is_loopback=service.lower().startswith("loopback") or device.startswith("lo"),
+                    forwarding_enabled=_macos_adapter_forwarding_state(
+                        device,
+                        global_forwarding,
+                        disabled_forwarding,
+                    ),
                 )
             )
         adapters.extend(self._loopback_aliases())
@@ -720,11 +727,17 @@ class MacOSBackend(BaseBackend):
         return OperationPlan("Delete loopback alias", [["ifconfig", "lo0", "-alias", address]])
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        device = adapter.description or adapter.id
+        if not device or adapter.id.startswith("lo0:"):
+            raise BackendError("A real macOS network device is required for forwarding changes.")
         state = "enabled" if enabled else "disabled"
         return OperationPlan(
             "Update adapter forwarding",
-            [],
-            [f"Per-interface IPv4 forwarding cannot be changed generically on macOS; requested {state}."],
+            [[sys.executable, "-m", "py_nic_manager.macos_forwarding", "set", device, state]],
+            [
+                "macOS uses a global IPv4 forwarding switch; Py NIC Manager applies PF rules "
+                "to block forwarded IPv4 packets received on selected interfaces.",
+            ],
         )
 
     def _services(self) -> dict[str, str]:
@@ -772,6 +785,20 @@ class MacOSBackend(BaseBackend):
         if not result.ok:
             return []
         return _loopback_alias_adapters(result.stdout)
+
+    def _global_forwarding_enabled(self) -> bool | None:
+        result = self.run(["sysctl", "-n", "net.inet.ip.forwarding"])
+        if not result.ok:
+            return None
+        return result.stdout.strip() == "1"
+
+    def _forwarding_disabled_interfaces(self) -> set[str]:
+        try:
+            from .macos_forwarding import load_disabled_interfaces
+
+            return load_disabled_interfaces()
+        except Exception:
+            return set()
 
 
 class GenericPosixBackend(BaseBackend):
@@ -1087,6 +1114,20 @@ def _parse_resolvectl_dns(output: str) -> dict[str, list[str]]:
 def _parse_ifconfig_mac(output: str) -> str:
     match = re.search(r"\bether\s+([0-9a-fA-F:]{17})", output)
     return match.group(1) if match else ""
+
+
+def _macos_adapter_forwarding_state(
+    device: str,
+    global_forwarding: bool | None,
+    disabled_interfaces: set[str],
+) -> bool | None:
+    if not device:
+        return None
+    if device.startswith("lo"):
+        return False
+    if global_forwarding is None:
+        return None
+    return bool(global_forwarding and device not in disabled_interfaces)
 
 
 def _loopback_alias_from_user_value(value: str) -> str:

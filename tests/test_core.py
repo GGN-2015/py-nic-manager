@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 import sys
 
-from py_nic_manager.backends import LinuxBackend, MacOSBackend, WindowsBackend, decode_command_output
+from py_nic_manager.backends import (
+    LinuxBackend,
+    MacOSBackend,
+    WindowsBackend,
+    _macos_adapter_forwarding_state,
+    decode_command_output,
+)
 from py_nic_manager.app import route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
@@ -192,6 +198,25 @@ def test_macos_loopback_create_uses_alias_address() -> None:
     plan = backend.plan_loopback_create("127.0.0.2")
 
     assert plan.commands == [["ifconfig", "lo0", "alias", "127.0.0.2/32"]]
+
+
+def test_macos_forwarding_plan_uses_packaged_pf_helper() -> None:
+    backend = MacOSBackend(dry_run=True)
+    adapter = AdapterInfo(id="en0", name="Wi-Fi", description="en0")
+
+    plan = backend.plan_adapter_forwarding_update(adapter, False)
+
+    assert plan.commands == [
+        [sys.executable, "-m", "py_nic_manager.macos_forwarding", "set", "en0", "disabled"]
+    ]
+
+
+def test_macos_forwarding_state_combines_global_and_disabled_interfaces() -> None:
+    assert _macos_adapter_forwarding_state("en0", True, set()) is True
+    assert _macos_adapter_forwarding_state("en0", True, {"en0"}) is False
+    assert _macos_adapter_forwarding_state("en0", False, set()) is False
+    assert _macos_adapter_forwarding_state("lo0", True, set()) is False
+    assert _macos_adapter_forwarding_state("en0", None, set()) is None
 
 
 def test_snapshot_apply_deletes_missing_route_and_adds_new_route() -> None:

@@ -85,6 +85,9 @@ Creating a Microsoft KM-TEST Loopback Adapter uses the built-in
 `%WINDIR%\inf\netloop.inf` driver directly. It does not require `devcon.exe` or
 the Windows Driver Kit.
 
+Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
+`Set-NetIPInterface -Forwarding`.
+
 ### Linux
 
 The Linux backend uses `ip` from iproute2. DNS and DHCP persistence are handled
@@ -93,12 +96,20 @@ fallback.
 
 Loopback-style adapters are implemented as Linux dummy interfaces.
 
+Per-adapter IPv4 router forwarding uses
+`net.ipv4.conf.<interface>.forwarding`.
+
 ### macOS
 
 The macOS backend uses `networksetup`, `ifconfig`, `route`, and `netstat`.
 Loopback creation is implemented as an address alias on `lo0`, because macOS
 does not create independent loopback NICs in the same way Linux creates dummy
 interfaces.
+
+macOS has a global IPv4 forwarding switch rather than the same per-interface
+switch exposed by Windows and Linux. Py NIC Manager enables global forwarding
+when needed and uses a `pf` anchor to block forwarded IPv4 packets received on
+interfaces that are disabled in the UI.
 
 ### Generic POSIX
 
