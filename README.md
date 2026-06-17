@@ -64,6 +64,18 @@ Or:
 python -m py_nic_manager
 ```
 
+By default, the launcher uses the PyQt6 interface when Qt can initialize in the
+current desktop session. If Qt cannot start, for example because a Linux `sudo`
+session cannot load the `xcb` platform plugin, the launcher automatically falls
+back to the legacy `tkinter` interface.
+
+You can force a GUI backend with:
+
+```bash
+PY_NIC_MANAGER_GUI=qt py-nic-manager
+PY_NIC_MANAGER_GUI=tk py-nic-manager
+```
+
 Use an elevated shell when you want to change system settings:
 
 - Windows: run PowerShell or Command Prompt as Administrator.

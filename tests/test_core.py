@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import subprocess
 import pytest
 
 from py_nic_manager.backends import (
@@ -15,6 +16,7 @@ from py_nic_manager.backends import (
 from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
+from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
@@ -138,6 +140,38 @@ def test_qt_window_can_be_constructed_without_refresh(monkeypatch) -> None:
     assert window.windowTitle() == "Py NIC Manager"
     assert window.tabs.count() == 4
     window.close()
+
+
+def test_gui_preference_env_values() -> None:
+    assert _gui_preference({}) == "auto"
+    assert _gui_preference({"PY_NIC_MANAGER_GUI": "qt"}) == "qt"
+    assert _gui_preference({"PY_NIC_MANAGER_GUI": "pyqt6"}) == "qt"
+    assert _gui_preference({"PY_NIC_MANAGER_GUI": "tkinter"}) == "tk"
+    assert _gui_preference({"PY_NIC_MANAGER_GUI": "surprise"}) == "auto"
+
+
+def test_qt_runtime_probe_handles_crashes(monkeypatch) -> None:
+    class Completed:
+        returncode = 134
+
+    def fake_run(*_args, **_kwargs):
+        return Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert _qt_runtime_available() is False
+
+
+def test_qt_runtime_probe_accepts_zero_returncode(monkeypatch) -> None:
+    class Completed:
+        returncode = 0
+
+    def fake_run(*_args, **_kwargs):
+        return Completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert _qt_runtime_available() is True
 
 
 def test_route_metrics_round_trip() -> None:
