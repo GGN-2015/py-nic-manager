@@ -28,6 +28,8 @@ with elevated permissions.
 - Import a saved snapshot and apply it as a best-effort one-click restore after
   previewing the system commands that will run.
 - Preview every mutating command before execution.
+- Use the headless Python programming API for the same adapter, loopback, route,
+  forwarding, and snapshot operations exposed by the GUI.
 
 ## Installation
 
@@ -68,6 +70,20 @@ Use an elevated shell when you want to change system settings:
 
 Without elevation, the app can still view adapters/routes and export
 configuration snapshots.
+
+## Programming API
+
+Py NIC Manager also provides a headless Python API:
+
+```python
+from py_nic_manager import NetworkManager
+
+manager = NetworkManager(dry_run=True)
+plan = manager.plan_create_loopback()
+print(plan.as_text())
+```
+
+See [PROGRAMMING_API.md](PROGRAMMING_API.md) for the complete API reference.
 
 ## Platform Notes
 

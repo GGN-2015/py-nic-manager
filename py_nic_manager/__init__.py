@@ -1,5 +1,20 @@
 """Cross-platform GUI network adapter manager."""
 
-__all__ = ["__version__"]
+from .api import NetworkManager, PrivilegeError
+from .backends import BackendError
+from .models import AdapterInfo, AddressInfo, CommandResult, NetworkSnapshot, OperationPlan, RouteInfo
 
-__version__ = "0.1.12"
+__all__ = [
+    "AdapterInfo",
+    "AddressInfo",
+    "BackendError",
+    "CommandResult",
+    "NetworkManager",
+    "NetworkSnapshot",
+    "OperationPlan",
+    "PrivilegeError",
+    "RouteInfo",
+    "__version__",
+]
+
+__version__ = "0.1.13"

@@ -11,9 +11,10 @@ from py_nic_manager.backends import (
     _macos_adapter_forwarding_state,
     decode_command_output,
 )
+from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
-from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
+from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, OperationPlan, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
 
@@ -288,9 +289,117 @@ def test_snapshot_apply_deletes_missing_route_and_adds_new_route() -> None:
     assert 'DestinationPrefix "203.0.113.0/24"' in rendered
 
 
+def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
+    manager = NetworkManager(_FakeWindowsBackend(dry_run=True), admin_checker=lambda: False)
+
+    snapshot = manager.get_snapshot(concurrent=False)
+    path = manager.export_snapshot(tmp_path / "snapshot.json", snapshot)
+    loaded = manager.import_snapshot(path)
+    adapter_plan = manager.plan_update_adapter(
+        "Ethernet",
+        address="192.0.2.50/24",
+        gateway="192.0.2.1",
+        dns_servers="1.1.1.1, 8.8.8.8",
+        mac="00:11:22:33:44:66",
+    )
+    forwarding_plan = manager.plan_set_adapter_forwarding("Ethernet", False)
+    create_loopback_plan = manager.plan_create_loopback()
+    delete_loopback_plan = manager.plan_delete_loopback("py-loopback0")
+    update_loopback_plan = manager.plan_update_loopback("py-loopback0", address="192.0.2.60/24")
+    add_route_plan = manager.plan_add_route(
+        "203.0.113.0/24",
+        gateway="192.0.2.1",
+        interface="Ethernet",
+        metric=20,
+    )
+    update_route_plan = manager.plan_update_route(
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        old_gateway="192.0.2.1",
+        old_interface="Ethernet",
+        gateway="192.0.2.1",
+        interface="Ethernet",
+        metric=20,
+    )
+    delete_route_plan = manager.plan_delete_route(
+        "198.51.100.0/24",
+        gateway="192.0.2.1",
+        interface="Ethernet",
+    )
+
+    assert loaded.platform == "Windows"
+    assert snapshot.adapters[0].name == "Ethernet"
+    assert any("netsh" in command[0].lower() for command in adapter_plan.commands)
+    assert "Set-NetIPInterface" in " ".join(forwarding_plan.commands[0])
+    assert "py-loopback1" in create_loopback_plan.commands[0]
+    assert delete_loopback_plan.title == "Delete loopback adapter"
+    assert update_loopback_plan.commands
+    assert add_route_plan.title == "Add route"
+    assert update_route_plan.title == "Update route"
+    assert delete_route_plan.title == "Delete route"
+
+    results = manager.run_plan(add_route_plan)
+    assert all(result.ok for result in results)
+
+
+def test_python_api_requires_admin_for_real_mutations() -> None:
+    manager = NetworkManager(_FakeWindowsBackend(dry_run=False), admin_checker=lambda: False)
+
+    try:
+        manager.run_plan(OperationPlan("Danger", [["would-run"]]))
+    except PrivilegeError as exc:
+        assert "Administrator/root" in str(exc)
+    else:
+        raise AssertionError("PrivilegeError was not raised.")
+
+
+def test_python_api_route_sorting_uses_network_and_metric_types() -> None:
+    routes = [
+        RouteInfo("10.0.0.0/24", metric=100),
+        RouteInfo("0.0.0.0/0", metric=10),
+        RouteInfo("default", metric=50),
+        RouteInfo("192.168.1.0/24", metric=None),
+        RouteInfo("10.0.0.0/8", metric=5),
+    ]
+
+    by_destination = api_sort_routes(routes, sort_by="destination")
+    by_metric = api_sort_routes(routes, sort_by="route_metric")
+
+    assert [route.destination for route in by_destination] == [
+        "0.0.0.0/0",
+        "default",
+        "10.0.0.0/8",
+        "10.0.0.0/24",
+        "192.168.1.0/24",
+    ]
+    assert [route.metric for route in by_metric] == [5, 10, 50, 100, None]
+
+
 class _FakeWindowsBackend(WindowsBackend):
     def list_adapters(self):
-        return []
+        return [
+            AdapterInfo(
+                id="ethernet-id",
+                name="Ethernet",
+                description="Ethernet Adapter",
+                mac="00-11-22-33-44-55",
+                status="Up",
+                addresses=[AddressInfo("192.0.2.10", 24)],
+                gateways=["192.0.2.1"],
+                dns_servers=["1.1.1.1"],
+                dhcp_enabled=False,
+                forwarding_enabled=True,
+            ),
+            AdapterInfo(
+                id="loopback-id",
+                name="py-loopback0",
+                description="Microsoft KM-TEST Loopback Adapter",
+                status="Up",
+                addresses=[AddressInfo("192.0.2.20", 24)],
+                is_loopback=True,
+                forwarding_enabled=False,
+            ),
+        ]
 
     def list_routes(self):
         return [
