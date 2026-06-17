@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 from py_nic_manager.backends import (
     LinuxBackend,
@@ -10,7 +11,7 @@ from py_nic_manager.backends import (
     _macos_adapter_forwarding_state,
     decode_command_output,
 )
-from py_nic_manager.app import _suggest_loopback_value, route_sort_key
+from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.models import AdapterInfo, AddressInfo, NetworkSnapshot, RouteInfo
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
@@ -85,6 +86,29 @@ def test_loopback_suggestion_skips_existing_macos_aliases() -> None:
     ]
 
     assert _suggest_loopback_value("macOS", adapters) == "127.0.0.4/32"
+
+
+def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None:
+    class SlowBackend:
+        def list_adapters(self):
+            time.sleep(0.2)
+            return ["adapter"]
+
+        def list_routes(self):
+            time.sleep(0.2)
+            return ["route"]
+
+    class Loader:
+        backend = SlowBackend()
+        _load_network_state = NetworkManagerApp._load_network_state
+
+    started_at = time.perf_counter()
+    adapters, routes = Loader()._load_network_state()
+    elapsed = time.perf_counter() - started_at
+
+    assert adapters == ["adapter"]
+    assert routes == ["route"]
+    assert elapsed < 0.35
 
 
 def test_route_metrics_round_trip() -> None:

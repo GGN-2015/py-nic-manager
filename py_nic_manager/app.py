@@ -4,6 +4,7 @@ import ipaddress
 import queue
 import threading
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from .admin import is_admin
@@ -334,7 +335,10 @@ class NetworkManagerApp(tk.Tk):
         )
 
     def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo]]:
-        return self.backend.list_adapters(), self.backend.list_routes()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            adapters_future = executor.submit(self.backend.list_adapters)
+            routes_future = executor.submit(self.backend.list_routes)
+            return adapters_future.result(), routes_future.result()
 
     def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo]]) -> None:
         self.adapters, self.routes = payload

@@ -197,11 +197,24 @@ class WindowsBackend(BaseBackend):
 
     def list_adapters(self) -> list[AdapterInfo]:
         script = r"""
+$configs = @{}
+Get-NetIPConfiguration -ErrorAction SilentlyContinue | ForEach-Object {
+  $configs[[int]$_.InterfaceIndex] = $_
+}
+$ipInterfaces = @{}
+Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+  $ipInterfaces[[int]$_.InterfaceIndex] = $_
+}
+$dnsServers = @{}
+Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+  $dnsServers[[int]$_.InterfaceIndex] = @($_.ServerAddresses)
+}
 $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex | ForEach-Object {
   $adapter = $_
-  $config = Get-NetIPConfiguration -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
-  $ipInterface = Get-NetIPInterface -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-  $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+  $index = [int]$adapter.InterfaceIndex
+  $config = $configs[$index]
+  $ipInterface = $ipInterfaces[$index]
+  $dns = @($dnsServers[$index])
   [pscustomobject]@{
     id = [string]$adapter.PnPDeviceID
     name = [string]$adapter.Name
@@ -219,7 +232,7 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
       }
     })
     gateways = @($config.IPv4DefaultGateway | ForEach-Object { [string]$_.NextHop })
-    dns_servers = @($dns.ServerAddresses | ForEach-Object { [string]$_ })
+    dns_servers = @($dns | ForEach-Object { [string]$_ })
   }
 }
 $adapters | ConvertTo-Json -Depth 6
