@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import pytest
 
 from py_nic_manager.backends import (
     LinuxBackend,
@@ -118,6 +119,25 @@ def test_format_elapsed_time_uses_seconds_minutes_and_hours() -> None:
     assert format_elapsed_time(60) == "1m 00s"
     assert format_elapsed_time(65) == "1m 05s"
     assert format_elapsed_time(3661) == "1h 01m 01s"
+
+
+def test_qt_format_elapsed_time_matches_tkinter_format() -> None:
+    qt_app = pytest.importorskip("py_nic_manager.qt_app")
+
+    assert qt_app.format_elapsed_time(3661) == "1h 01m 01s"
+
+
+def test_qt_window_can_be_constructed_without_refresh(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    qt_app = pytest.importorskip("py_nic_manager.qt_app")
+
+    app = qt_app.QApplication.instance() or qt_app.QApplication([])
+    qt_app.apply_auto_theme(app)
+    window = qt_app.NetworkManagerQtWindow(auto_refresh=False)
+
+    assert window.windowTitle() == "Py NIC Manager"
+    assert window.tabs.count() == 4
+    window.close()
 
 
 def test_route_metrics_round_trip() -> None:

@@ -4,11 +4,12 @@ Py NIC Manager is a cross-platform Python GUI for viewing and changing network
 adapter settings, loopback-style adapters, route tables, and saved network
 configuration snapshots.
 
-The application is written in English and uses the Python standard `tkinter`
-GUI toolkit. It can run on Windows and POSIX systems. Administrative actions
-require Administrator/root privileges; when the app is started without those
-privileges, it opens in read-only mode and clearly asks the user to restart it
-with elevated permissions.
+The application is written in English and uses a modern PyQt6 interface with an
+automatic light/dark theme. A legacy `tkinter` interface remains available as a
+fallback if PyQt6 cannot be imported. It can run on Windows and POSIX systems.
+Administrative actions require Administrator/root privileges; when the app is
+started without those privileges, it opens in read-only mode and clearly asks
+the user to restart it with elevated permissions.
 
 ## Features
 
@@ -49,7 +50,7 @@ python -m pip install -e .
 
 The project depends on
 [`is-admin-user`](https://pypi.org/project/is-admin-user/) for privilege
-detection.
+detection and PyQt6 for the default GUI.
 
 ## Running
 
