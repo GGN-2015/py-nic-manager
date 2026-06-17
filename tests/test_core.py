@@ -482,6 +482,21 @@ def test_windows_nat_plan_uses_persistent_winnat() -> None:
     assert plan.restart_required is False
     assert "New-NetNat" in rendered
     assert "InternalIPInterfaceAddressPrefix" in rendered
+    assert "ExternalIPInterfaceAddressPrefix" not in rendered
+
+
+def test_windows_nat_rejects_adapter_name_as_external_prefix() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    with pytest.raises(BackendError, match="not an adapter name"):
+        backend.plan_nat_create(NatRule("nat0", "192.168.0.0/16", "WLAN"))
+
+
+def test_windows_nat_rejects_default_route_as_internal_prefix() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    with pytest.raises(BackendError, match="not 0.0.0.0/0"):
+        backend.plan_nat_create(NatRule("nat0", "0.0.0.0/0"))
 
 
 def test_macos_loopback_create_uses_alias_address() -> None:
@@ -569,7 +584,7 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
         gateway="192.0.2.1",
         interface="Ethernet",
     )
-    nat_plan = manager.plan_create_nat_rule("nat1", "192.168.10.0/24", outbound_interface="Ethernet")
+    nat_plan = manager.plan_create_nat_rule("nat1", "192.168.10.0/24")
     delete_nat_plan = manager.plan_delete_nat_rule("nat0")
     restart_plan = manager.plan_restart_system()
 

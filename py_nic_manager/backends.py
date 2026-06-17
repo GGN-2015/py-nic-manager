@@ -542,13 +542,14 @@ New-ItemProperty `
         )
 
     def plan_nat_create(self, rule: NatRule) -> OperationPlan:
-        source = _validate_nat_source(rule.source_cidr)
+        source = _validate_windows_nat_source(rule.source_cidr)
         name = rule.name.strip()
         if not name:
             raise BackendError("A NAT rule name is required.")
+        external_prefix = _validate_windows_nat_external_prefix(rule.outbound_interface)
         external = (
-            f' -ExternalIPInterfaceAddressPrefix "{_ps_escape(rule.outbound_interface.strip())}"'
-            if rule.outbound_interface.strip()
+            f' -ExternalIPInterfaceAddressPrefix "{_ps_escape(external_prefix)}"'
+            if external_prefix
             else ""
         )
         script = (
@@ -559,7 +560,8 @@ New-ItemProperty `
         )
         notes = [
             "Windows WinNAT rules are persistent.",
-            "Windows WinNAT selects the external route by the system route table; an external prefix can be supplied when needed.",
+            "Windows WinNAT selects the external route by the system route table when the external prefix is left blank.",
+            "Windows WinNAT external prefix is an IP prefix such as 203.0.113.0/24, not an adapter name.",
         ]
         if not rule.enabled:
             notes.append("WinNAT does not support disabled stored NAT rules; this rule will be created enabled.")
@@ -1459,6 +1461,46 @@ def _validate_nat_source(value: str) -> str:
         return str(ipaddress.ip_network(value.strip(), strict=False))
     except ValueError as exc:
         raise BackendError(f"Invalid NAT source CIDR: {value}") from exc
+
+
+def _validate_windows_nat_source(value: str) -> str:
+    network = _parse_nat_network(value)
+    if network.version != 4:
+        raise BackendError("Windows WinNAT supports IPv4 source CIDRs only.")
+    if network.prefixlen == 0:
+        raise BackendError(
+            "Windows WinNAT source CIDR must be the internal network to translate, "
+            "not 0.0.0.0/0. Use a private/LAN prefix such as 192.168.0.0/16."
+        )
+    if network.network_address.is_loopback or network.network_address.is_multicast:
+        raise BackendError("Windows WinNAT source CIDR must be a usable internal IPv4 network.")
+    return str(network)
+
+
+def _validate_windows_nat_external_prefix(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    try:
+        network = ipaddress.ip_network(text, strict=False)
+    except ValueError as exc:
+        raise BackendError(
+            "Windows WinNAT external prefix must be an IPv4 CIDR such as 203.0.113.0/24, "
+            "not an adapter name like WLAN. Leave it blank to let Windows choose the external path "
+            "from the route table."
+        ) from exc
+    if network.version != 4:
+        raise BackendError("Windows WinNAT external prefix must be IPv4.")
+    if network.prefixlen == 0:
+        raise BackendError("Windows WinNAT external prefix must be narrower than 0.0.0.0/0.")
+    return str(network)
+
+
+def _parse_nat_network(value: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    try:
+        return ipaddress.ip_network(value.strip(), strict=False)
+    except ValueError as exc:
+        raise BackendError(f"Invalid NAT CIDR: {value}") from exc
 
 
 def _merge_nat_rules(managed: list[NatRule], runtime: list[NatRule]) -> list[NatRule]:

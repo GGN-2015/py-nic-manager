@@ -416,7 +416,7 @@ class NetworkManagerQtWindow(QMainWindow):
 
         self.nat_table = QTableWidget(0, 6)
         self.nat_table.setHorizontalHeaderLabels(
-            ["Name", "Source CIDR", "Outbound Interface", "Enabled", "Persistent", "Managed"]
+            ["Name", "Source CIDR", self._nat_outbound_label(), "Enabled", "Persistent", "Managed"]
         )
         self._configure_table(self.nat_table)
         self.nat_table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
@@ -446,7 +446,7 @@ class NetworkManagerQtWindow(QMainWindow):
         self._admin_only_widgets.append(self.nat_enabled_check)
         form.addRow("Name", self.nat_name_edit)
         form.addRow("Source CIDR", self.nat_source_edit)
-        form.addRow("Outbound interface", self.nat_outbound_edit)
+        form.addRow(self._nat_outbound_label(), self.nat_outbound_edit)
         form.addRow("", self.nat_enabled_check)
         panel_layout.addLayout(form)
 
@@ -534,6 +534,11 @@ class NetworkManagerQtWindow(QMainWindow):
         label = QLabel(text)
         label.setObjectName("sectionLabel")
         return label
+
+    def _nat_outbound_label(self) -> str:
+        if self.manager.backend_name == "Windows":
+            return "External prefix (optional)"
+        return "Outbound Interface"
 
     def _separator(self) -> QFrame:
         separator = QFrame()

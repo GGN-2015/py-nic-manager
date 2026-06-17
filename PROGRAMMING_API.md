@@ -437,15 +437,18 @@ Create or update a persistent NAT rule:
 plan = manager.plan_create_nat_rule(
     "lab-nat",
     "192.168.56.0/24",
-    outbound_interface="Ethernet",
 )
 print(plan.as_text())
 results = manager.create_nat_rule(
     "lab-nat",
     "192.168.56.0/24",
-    outbound_interface="Ethernet",
 )
 ```
+
+The `outbound_interface` argument is platform-specific. On Linux and macOS it
+is the outbound interface name. On Windows it is the optional WinNAT external
+IP prefix, not an adapter alias; leave it blank to let Windows choose the
+external path from the route table.
 
 Delete a NAT rule:
 

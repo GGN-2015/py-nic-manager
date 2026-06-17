@@ -136,8 +136,9 @@ setting under `Tcpip\Parameters`.
 Persistent NAT uses Windows WinNAT (`Get-NetNat`, `New-NetNat`, and
 `Remove-NetNat`). WinNAT rules are persistent and take effect immediately after
 the command succeeds. Windows chooses the external path by the route table;
-Py NIC Manager stores the optional external prefix in the outbound-interface
-field when one is supplied.
+leave the external prefix blank unless you specifically need a WinNAT external
+IP prefix. Windows does not accept adapter aliases such as `WLAN` for that
+field.
 
 ### Linux
 

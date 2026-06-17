@@ -330,7 +330,7 @@ class NetworkManagerApp(tk.Tk):
         )
         self._set_nat_heading("#0", "Name", "name")
         self._set_nat_heading("source_cidr", "Source CIDR", "source_cidr")
-        self._set_nat_heading("outbound_interface", "Outbound Interface", "outbound_interface")
+        self._set_nat_heading("outbound_interface", self._nat_outbound_label(), "outbound_interface")
         self._set_nat_heading("enabled", "Enabled", "enabled")
         self._set_nat_heading("persistent", "Persistent", "persistent")
         self._set_nat_heading("managed", "Managed", "managed")
@@ -352,7 +352,7 @@ class NetworkManagerApp(tk.Tk):
 
         self._labeled_entry(panel, "Name", self.nat_name_var, 1, admin_required=True)
         self._labeled_entry(panel, "Source CIDR", self.nat_source_var, 2, admin_required=True)
-        self._labeled_entry(panel, "Outbound interface", self.nat_outbound_var, 3, admin_required=True)
+        self._labeled_entry(panel, self._nat_outbound_label(), self.nat_outbound_var, 3, admin_required=True)
         self.nat_enabled_check = ttk.Checkbutton(panel, text="Enable NAT rule", variable=self.nat_enabled_var)
         self.nat_enabled_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 10))
         self._admin_only_widgets.append(self.nat_enabled_check)
@@ -653,7 +653,7 @@ class NetworkManagerApp(tk.Tk):
         labels = {
             "name": ("#0", "Name"),
             "source_cidr": ("source_cidr", "Source CIDR"),
-            "outbound_interface": ("outbound_interface", "Outbound Interface"),
+            "outbound_interface": ("outbound_interface", self._nat_outbound_label()),
             "enabled": ("enabled", "Enabled"),
             "persistent": ("persistent", "Persistent"),
             "managed": ("managed", "Managed"),
@@ -679,6 +679,11 @@ class NetworkManagerApp(tk.Tk):
             key=lambda item: nat_sort_key(item[1], self._nat_sort_column),
             reverse=self._nat_sort_descending,
         )
+
+    def _nat_outbound_label(self) -> str:
+        if self.backend.name == "Windows":
+            return "External prefix (optional)"
+        return "Outbound Interface"
 
     def _on_adapter_select(self, _event: tk.Event | None = None) -> None:
         adapter = self._selected_adapter()
