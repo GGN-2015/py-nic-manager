@@ -98,8 +98,8 @@ class NetworkManager:
                 platform=self.backend.name,
                 adapters=adapters_future.result(),
                 routes=routes_future.result(),
-                nat_rules=nat_future.result(),
-                global_forwarding_enabled=global_forwarding_future.result(),
+                nat_rules=_future_result_or(nat_future, []),
+                global_forwarding_enabled=_future_result_or(global_forwarding_future, None),
             )
 
     def export_snapshot(self, path: str | Path, snapshot: NetworkSnapshot | None = None) -> Path:
@@ -696,6 +696,13 @@ def _format_address(address: AddressInfo) -> str:
     if address.prefix_length is None:
         return address.address
     return f"{address.address}/{address.prefix_length}"
+
+
+def _future_result_or(future, fallback):
+    try:
+        return future.result()
+    except Exception:
+        return fallback
 
 
 def _format_forwarding(value: bool | None) -> str:

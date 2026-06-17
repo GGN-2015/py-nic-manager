@@ -44,6 +44,7 @@ class NetworkManagerApp(tk.Tk):
         self._route_sort_descending = False
         self._nat_sort_column = "name"
         self._nat_sort_descending = False
+        self._optional_load_errors: list[str] = []
         self._active_plan: OperationPlan | None = None
         self.ui_font_family = configure_tk_fonts(self)
         self.ui_text_font = (self.ui_font_family, 10)
@@ -150,14 +151,33 @@ class NetworkManagerApp(tk.Tk):
         self.busy_progress = ttk.Progressbar(busy_panel, mode="indeterminate", length=260)
         self.busy_progress.grid(row=3, column=0, sticky="ew")
 
+    def _build_split_tab(self, tab: ttk.Frame) -> tuple[ttk.Panedwindow, ttk.Frame, ttk.Frame]:
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        paned = ttk.Panedwindow(tab, orient=tk.HORIZONTAL)
+        paned.grid(row=0, column=0, sticky="nsew")
+        table_frame = ttk.Frame(paned, width=720)
+        panel = ttk.Frame(paned, padding=(12, 0, 0, 0), width=320)
+        paned.add(table_frame, weight=3)
+        paned.add(panel, weight=1)
+        return paned, table_frame, panel
+
+    def _grid_scrollable_tree(self, parent: ttk.Frame, tree: ttk.Treeview) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
     def _build_adapters_tab(self) -> None:
-        self.adapters_tab.columnconfigure(0, weight=2)
-        self.adapters_tab.columnconfigure(1, weight=1)
-        self.adapters_tab.rowconfigure(0, weight=1)
+        self.adapters_paned, table_frame, panel = self._build_split_tab(self.adapters_tab)
 
         columns = ("index", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind")
         self.adapter_tree = ttk.Treeview(
-            self.adapters_tab,
+            table_frame,
             columns=columns,
             show="tree headings",
             selectmode="browse",
@@ -180,15 +200,8 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("gateway", width=140)
         self.adapter_tree.column("dns", width=190)
         self.adapter_tree.column("kind", width=90, anchor="center")
-        self.adapter_tree.grid(row=0, column=0, sticky="nsew")
         self.adapter_tree.bind("<<TreeviewSelect>>", self._on_adapter_select)
-
-        adapter_scroll = ttk.Scrollbar(self.adapters_tab, orient="vertical", command=self.adapter_tree.yview)
-        adapter_scroll.grid(row=0, column=0, sticky="nse")
-        self.adapter_tree.configure(yscrollcommand=adapter_scroll.set)
-
-        panel = ttk.Frame(self.adapters_tab, padding=(12, 0, 0, 0))
-        panel.grid(row=0, column=1, sticky="nsew")
+        self._grid_scrollable_tree(table_frame, self.adapter_tree)
         panel.columnconfigure(1, weight=1)
 
         ttk.Label(panel, text="Adapter Settings", style="Header.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -255,13 +268,11 @@ class NetworkManagerApp(tk.Tk):
         self._admin_only_widgets.append(self.delete_loopback_button)
 
     def _build_routes_tab(self) -> None:
-        self.routes_tab.columnconfigure(0, weight=2)
-        self.routes_tab.columnconfigure(1, weight=1)
-        self.routes_tab.rowconfigure(0, weight=1)
+        self.routes_paned, table_frame, panel = self._build_split_tab(self.routes_tab)
 
         columns = ("gateway", "interface", "route_metric", "interface_metric", "effective_metric", "protocol", "table")
         self.route_tree = ttk.Treeview(
-            self.routes_tab,
+            table_frame,
             columns=columns,
             show="tree headings",
             selectmode="browse",
@@ -282,15 +293,8 @@ class NetworkManagerApp(tk.Tk):
         self.route_tree.column("effective_metric", width=120, anchor="center")
         self.route_tree.column("protocol", width=95)
         self.route_tree.column("table", width=75)
-        self.route_tree.grid(row=0, column=0, sticky="nsew")
         self.route_tree.bind("<<TreeviewSelect>>", self._on_route_select)
-
-        route_scroll = ttk.Scrollbar(self.routes_tab, orient="vertical", command=self.route_tree.yview)
-        route_scroll.grid(row=0, column=0, sticky="nse")
-        self.route_tree.configure(yscrollcommand=route_scroll.set)
-
-        panel = ttk.Frame(self.routes_tab, padding=(12, 0, 0, 0))
-        panel.grid(row=0, column=1, sticky="nsew")
+        self._grid_scrollable_tree(table_frame, self.route_tree)
         panel.columnconfigure(1, weight=1)
 
         ttk.Label(panel, text="Route Editor", style="Header.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -315,13 +319,11 @@ class NetworkManagerApp(tk.Tk):
         self._admin_only_widgets.append(self.delete_route_button)
 
     def _build_nat_tab(self) -> None:
-        self.nat_tab.columnconfigure(0, weight=2)
-        self.nat_tab.columnconfigure(1, weight=1)
-        self.nat_tab.rowconfigure(0, weight=1)
+        self.nat_paned, table_frame, panel = self._build_split_tab(self.nat_tab)
 
         columns = ("source_cidr", "outbound_interface", "enabled", "persistent", "managed")
         self.nat_tree = ttk.Treeview(
-            self.nat_tab,
+            table_frame,
             columns=columns,
             show="tree headings",
             selectmode="browse",
@@ -338,15 +340,8 @@ class NetworkManagerApp(tk.Tk):
         self.nat_tree.column("enabled", width=80, anchor="center")
         self.nat_tree.column("persistent", width=90, anchor="center")
         self.nat_tree.column("managed", width=90, anchor="center")
-        self.nat_tree.grid(row=0, column=0, sticky="nsew")
         self.nat_tree.bind("<<TreeviewSelect>>", self._on_nat_select)
-
-        nat_scroll = ttk.Scrollbar(self.nat_tab, orient="vertical", command=self.nat_tree.yview)
-        nat_scroll.grid(row=0, column=0, sticky="nse")
-        self.nat_tree.configure(yscrollcommand=nat_scroll.set)
-
-        panel = ttk.Frame(self.nat_tab, padding=(12, 0, 0, 0))
-        panel.grid(row=0, column=1, sticky="nsew")
+        self._grid_scrollable_tree(table_frame, self.nat_tree)
         panel.columnconfigure(1, weight=1)
 
         ttk.Label(panel, text="NAT Rule Editor", style="Header.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -444,11 +439,20 @@ class NetworkManagerApp(tk.Tk):
             routes_future = executor.submit(self.backend.list_routes)
             nat_future = executor.submit(self.backend.list_nat_rules)
             global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
+            optional_errors: list[str] = []
+            nat_rules = _future_result_or(nat_future, [], "NAT rules", optional_errors)
+            global_forwarding = _future_result_or(
+                global_forwarding_future,
+                None,
+                "Global forwarding state",
+                optional_errors,
+            )
+            self._optional_load_errors = optional_errors
             return (
                 adapters_future.result(),
                 routes_future.result(),
-                nat_future.result(),
-                global_forwarding_future.result(),
+                nat_rules,
+                global_forwarding,
             )
 
     def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], bool | None]) -> None:
@@ -458,9 +462,12 @@ class NetworkManagerApp(tk.Tk):
         self._populate_adapters()
         self._populate_routes()
         self._populate_nat_rules()
-        self.status_var.set(
-            f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, and {len(self.nat_rules)} NAT rules."
-        )
+        status = f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, and {len(self.nat_rules)} NAT rules."
+        if self._optional_load_errors:
+            status += " Some optional status items are unavailable; see the log."
+            for message in self._optional_load_errors:
+                self._log(message)
+        self.status_var.set(status)
         self._log(f"Refreshed state from the {self.backend.name} backend.")
 
     def _populate_adapters(self) -> None:
@@ -1239,6 +1246,15 @@ def _format_address(address: AddressInfo | None) -> str:
     if address.prefix_length is None:
         return address.address
     return f"{address.address}/{address.prefix_length}"
+
+
+def _future_result_or(future, fallback, label: str = "Optional state", errors: list[str] | None = None):
+    try:
+        return future.result()
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"{label} unavailable: {exc}")
+        return fallback
 
 
 def _format_forwarding(value: bool | None) -> str:

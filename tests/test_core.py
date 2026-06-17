@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from py_nic_manager.backends import (
+    BackendError,
     LinuxBackend,
     MacOSBackend,
     WindowsBackend,
@@ -129,6 +130,37 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
     assert nat_rules == ["nat"]
     assert global_forwarding is True
     assert elapsed < 0.35
+
+
+def test_network_state_loader_tolerates_optional_state_failures() -> None:
+    class PartiallyFailingBackend:
+        def list_adapters(self):
+            return ["adapter"]
+
+        def list_routes(self):
+            return ["route"]
+
+        def list_nat_rules(self):
+            raise RuntimeError("NAT is unavailable.")
+
+        def get_global_forwarding_enabled(self):
+            raise RuntimeError("Forwarding state is unavailable.")
+
+    class Loader:
+        backend = PartiallyFailingBackend()
+        _load_network_state = NetworkManagerApp._load_network_state
+
+    loader = Loader()
+    adapters, routes, nat_rules, global_forwarding = loader._load_network_state()
+
+    assert adapters == ["adapter"]
+    assert routes == ["route"]
+    assert nat_rules == []
+    assert global_forwarding is None
+    assert loader._optional_load_errors == [
+        "NAT rules unavailable: NAT is unavailable.",
+        "Global forwarding state unavailable: Forwarding state is unavailable.",
+    ]
 
 
 def test_format_elapsed_time_uses_seconds_minutes_and_hours() -> None:
@@ -346,6 +378,24 @@ def test_windows_global_forwarding_read_avoids_noisy_missing_value_cmdlet() -> N
     assert "Get-ItemPropertyValue" not in rendered
 
 
+def test_windows_nat_read_is_optional_when_winnat_is_unavailable() -> None:
+    class FailingWindowsBackend(WindowsBackend):
+        command: list[str] | None = None
+
+        def run_json(self, command: list[str]) -> object:
+            self.command = command
+            raise BackendError("Get-NetNat is unavailable.")
+
+    backend = FailingWindowsBackend(dry_run=True)
+
+    rules = backend.list_nat_rules()
+
+    assert rules == []
+    assert backend.command is not None
+    rendered = " ".join(backend.command)
+    assert "Get-Command Get-NetNat" in rendered
+
+
 def test_linux_route_plan_uses_ipv4_ip_route() -> None:
     backend = LinuxBackend(dry_run=True)
     route = RouteInfo("198.51.100.0/24", "192.0.2.1", "eth0", 5)
@@ -541,6 +591,24 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
 
     results = manager.run_plan(add_route_plan)
     assert all(result.ok for result in results)
+
+
+def test_python_api_concurrent_snapshot_tolerates_optional_state_failures() -> None:
+    class PartiallyFailingBackend(_FakeWindowsBackend):
+        def list_nat_rules(self):
+            raise RuntimeError("NAT is unavailable.")
+
+        def get_global_forwarding_enabled(self):
+            raise RuntimeError("Forwarding state is unavailable.")
+
+    manager = NetworkManager(PartiallyFailingBackend(dry_run=True), admin_checker=lambda: False)
+
+    snapshot = manager.get_snapshot(concurrent=True)
+
+    assert snapshot.adapters
+    assert snapshot.routes
+    assert snapshot.nat_rules == []
+    assert snapshot.global_forwarding_enabled is None
 
 
 def test_python_api_requires_admin_for_real_mutations() -> None:

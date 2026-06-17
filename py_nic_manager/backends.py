@@ -342,21 +342,35 @@ Get-NetRoute -AddressFamily IPv4 |
 
     def list_nat_rules(self) -> list[NatRule]:
         script = r"""
-Get-NetNat -ErrorAction SilentlyContinue |
-  Sort-Object -Property Name |
-  ForEach-Object {
-    [pscustomobject]@{
-      name = [string]$_.Name
-      source_cidr = [string]$_.InternalIPInterfaceAddressPrefix
-      outbound_interface = [string]$_.ExternalIPInterfaceAddressPrefix
-      enabled = [bool]($true)
-      persistent = [bool]($true)
-      managed = [bool]($true)
-      family = "ipv4"
-    }
-  } | ConvertTo-Json -Depth 4
+if (-not (Get-Command Get-NetNat -ErrorAction SilentlyContinue)) {
+  ConvertTo-Json -InputObject @() -Depth 4
+  return
+}
+try {
+  $rules = @(
+    Get-NetNat -ErrorAction Stop |
+      Sort-Object -Property Name |
+      ForEach-Object {
+        [pscustomobject]@{
+          name = [string]$_.Name
+          source_cidr = [string]$_.InternalIPInterfaceAddressPrefix
+          outbound_interface = [string]$_.ExternalIPInterfaceAddressPrefix
+          enabled = [bool]($true)
+          persistent = [bool]($true)
+          managed = [bool]($true)
+          family = "ipv4"
+        }
+      }
+  )
+  ConvertTo-Json -InputObject $rules -Depth 4
+} catch {
+  ConvertTo-Json -InputObject @() -Depth 4
+}
 """
-        data = self.run_json(_powershell(script))
+        try:
+            data = self.run_json(_powershell(script))
+        except BackendError:
+            return []
         return [NatRule.from_dict(item) for item in _as_list(data)]
 
     def plan_adapter_update(
