@@ -19,7 +19,7 @@ from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as ap
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
-from py_nic_manager.models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from py_nic_manager.models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
 from py_nic_manager.tk_fonts import BUNDLED_FONT_FAMILY, bundled_font_paths
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
@@ -38,6 +38,18 @@ def test_command_output_decodes_utf8_and_gbk() -> None:
     assert decode_command_output(text.encode("utf-8")) == text
     assert decode_command_output(text.encode("gbk")) == text
     assert decode_command_output(("\ufeff" + text).encode("utf-8")) == text
+
+
+def test_command_result_error_message_hides_full_command() -> None:
+    result = CommandResult(
+        command=["powershell", "-Command", "function VeryLongScript { }"],
+        returncode=1,
+        stderr="A concise error.",
+    )
+
+    assert result.error_message() == "A concise error."
+    assert "VeryLongScript" not in result.error_message()
+    assert "VeryLongScript" in result.summary()
 
 
 def test_snapshot_round_trip(tmp_path) -> None:
@@ -488,6 +500,7 @@ def test_windows_nat_plan_uses_persistent_winnat() -> None:
     assert "4294967295" in rendered
     assert "0xffffffff" not in rendered
     assert "Test-IPv4PrefixOverlap" in rendered
+    assert "Failed to create Windows WinNAT rule" in rendered
 
 
 def test_windows_nat_requires_outbound_interface() -> None:

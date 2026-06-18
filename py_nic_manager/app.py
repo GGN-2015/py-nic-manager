@@ -1003,7 +1003,7 @@ class NetworkManagerApp(tk.Tk):
         if failures:
             messagebox.showerror(
                 "Command Failed",
-                "\n\n".join(result.summary() for result in failures[:3]),
+                "\n\n".join(result.error_message() for result in failures[:3]),
             )
             self.status_var.set(f"{len(failures)} command(s) failed.")
         else:

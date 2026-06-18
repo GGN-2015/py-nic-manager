@@ -1034,7 +1034,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 if not result.ok:
                     failures.append(result)
         if failures:
-            self._error("Command Failed", "\n\n".join(result.summary() for result in failures[:3]))
+            self._error("Command Failed", "\n\n".join(result.error_message() for result in failures[:3]))
             self.statusBar().showMessage(f"{len(failures)} command(s) failed.")
         else:
             self.statusBar().showMessage("Network command plan completed.")

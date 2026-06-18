@@ -637,10 +637,15 @@ if (Test-IPv4PrefixOverlap "{_ps_escape(source)}" $externalPrefix) {{
 }}
 Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue |
   Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
-New-NetNat `
-  -Name "{_ps_escape(name)}" `
-  -InternalIPInterfaceAddressPrefix "{_ps_escape(source)}" `
-  -ExternalIPInterfaceAddressPrefix $externalPrefix
+try {{
+  New-NetNat `
+    -Name "{_ps_escape(name)}" `
+    -InternalIPInterfaceAddressPrefix "{_ps_escape(source)}" `
+    -ExternalIPInterfaceAddressPrefix $externalPrefix `
+    -ErrorAction Stop
+}} catch {{
+  throw "Failed to create Windows WinNAT rule '{_ps_escape(name)}' from source CIDR '{_ps_escape(source)}' through outbound interface '$outboundInterface' (external prefix '$externalPrefix'). $($_.Exception.Message)"
+}}
 """
         notes = [
             "Windows WinNAT rules are persistent.",

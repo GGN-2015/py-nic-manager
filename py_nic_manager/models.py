@@ -26,6 +26,12 @@ class CommandResult:
             return f"{command_text}\n{output}"
         return command_text
 
+    def error_message(self) -> str:
+        output = (self.stderr or self.stdout).strip()
+        if output:
+            return output
+        return "Command failed without stderr/stdout. See the log for the full command."
+
 
 @dataclass(slots=True)
 class AddressInfo:
