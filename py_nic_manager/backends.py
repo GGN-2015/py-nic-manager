@@ -548,6 +548,12 @@ New-ItemProperty `
             raise BackendError("A NAT rule name is required.")
         outbound_interface = _validate_nat_outbound_interface(rule.outbound_interface)
         script = rf"""
+function Stop-PyNicManagerCommand {{
+  param([string]$Message)
+  [Console]::Error.WriteLine($Message)
+  exit 1
+}}
+
 function ConvertTo-IPv4UInt {{
   param([string]$IPAddress)
   $bytes = [System.Net.IPAddress]::Parse($IPAddress).GetAddressBytes()
@@ -620,10 +626,10 @@ try {{
       }}
   )
 }} catch {{
-  throw "Outbound interface '$outboundInterface' was not found or has no IPv4 configuration."
+  Stop-PyNicManagerCommand ("Outbound interface '" + $outboundInterface + "' was not found or has no IPv4 configuration.")
 }}
 if (-not $externalAddresses) {{
-  throw "Outbound interface '$outboundInterface' has no usable IPv4 address for Windows WinNAT."
+  Stop-PyNicManagerCommand ("Outbound interface '" + $outboundInterface + "' has no usable IPv4 address for Windows WinNAT.")
 }}
 $externalAddress = $externalAddresses |
   Sort-Object `
@@ -633,7 +639,7 @@ $externalAddress = $externalAddresses |
   Select-Object -First 1
 $externalPrefix = ConvertTo-IPv4NetworkPrefix $externalAddress.IPAddress ([int]$externalAddress.PrefixLength)
 if (Test-IPv4PrefixOverlap "{_ps_escape(source)}" $externalPrefix) {{
-  throw "NAT source CIDR '{_ps_escape(source)}' overlaps outbound interface '$outboundInterface' prefix '$externalPrefix'. Choose the internal network behind this host, not the outbound interface's own LAN."
+  Stop-PyNicManagerCommand ("NAT source CIDR '{_ps_escape(source)}' overlaps outbound interface '" + $outboundInterface + "' prefix '" + $externalPrefix + "'. Choose the internal network behind this host, not the outbound interface's own LAN.")
 }}
 Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue |
   Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
@@ -644,7 +650,7 @@ try {{
     -ExternalIPInterfaceAddressPrefix $externalPrefix `
     -ErrorAction Stop
 }} catch {{
-  throw "Failed to create Windows WinNAT rule '{_ps_escape(name)}' from source CIDR '{_ps_escape(source)}' through outbound interface '$outboundInterface' (external prefix '$externalPrefix'). $($_.Exception.Message)"
+  Stop-PyNicManagerCommand ("Failed to create Windows WinNAT rule '{_ps_escape(name)}' from source CIDR '{_ps_escape(source)}' through outbound interface '" + $outboundInterface + "' (external prefix '" + $externalPrefix + "'). " + $_.Exception.Message)
 }}
 """
         notes = [

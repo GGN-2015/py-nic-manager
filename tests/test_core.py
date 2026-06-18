@@ -52,6 +52,24 @@ def test_command_result_error_message_hides_full_command() -> None:
     assert "VeryLongScript" in result.summary()
 
 
+def test_command_result_error_message_strips_powershell_location_noise() -> None:
+    result = CommandResult(
+        command=["powershell", "-Command", "throw ..."],
+        returncode=1,
+        stderr=(
+            "Failed through outbound interface 'WLAN'. inner reason\n"
+            "At line:7 char:3\n"
+            "+   throw \"Failed through outbound interface '$outboundInterface'\"\n"
+            "+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+            "    + CategoryInfo          : OperationStopped: (...):String) [], RuntimeException\n"
+            "    + FullyQualifiedErrorId : Failed through outbound interface 'WLAN'. inner reason\n"
+        ),
+    )
+
+    assert result.error_message() == "Failed through outbound interface 'WLAN'. inner reason"
+    assert "$outboundInterface" not in result.error_message()
+
+
 def test_snapshot_round_trip(tmp_path) -> None:
     path = tmp_path / "snapshot.json"
     snapshot = NetworkSnapshot(
@@ -501,6 +519,7 @@ def test_windows_nat_plan_uses_persistent_winnat() -> None:
     assert "0xffffffff" not in rendered
     assert "Test-IPv4PrefixOverlap" in rendered
     assert "Failed to create Windows WinNAT rule" in rendered
+    assert "Stop-PyNicManagerCommand" in rendered
 
 
 def test_windows_nat_requires_outbound_interface() -> None:

@@ -29,8 +29,22 @@ class CommandResult:
     def error_message(self) -> str:
         output = (self.stderr or self.stdout).strip()
         if output:
-            return output
+            return _clean_command_error(output)
         return "Command failed without stderr/stdout. See the log for the full command."
+
+
+def _clean_command_error(output: str) -> str:
+    lines = output.strip().splitlines()
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("At line:", "+ ", "CategoryInfo", "FullyQualifiedErrorId")):
+            break
+        if set(stripped) <= {"~"}:
+            break
+        kept.append(line)
+    cleaned = "\n".join(kept).strip()
+    return cleaned or output.strip()
 
 
 @dataclass(slots=True)
