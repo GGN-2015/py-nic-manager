@@ -453,6 +453,8 @@ available and falls back to Internet Connection Sharing (ICS). The source CIDR
 is used to infer the private/internal interface, while `outbound_interface`
 selects the public/shared interface. Windows ICS supports one public shared
 interface at a time, so an ICS-backed rule may replace another ICS sharing setup.
+Windows ICS also requires a real private network adapter; it cannot use a
+loopback adapter as the shared/private side.
 
 Delete a NAT rule:
 

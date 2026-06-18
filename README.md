@@ -140,7 +140,8 @@ Windows RRAS/ICS configuration. You still select an outbound interface in Py NIC
 Manager; the Windows backend uses that interface as the public/shared interface
 and infers the private/internal interface from the source CIDR. Windows ICS
 supports one public shared interface at a time, so an ICS-backed rule may replace
-another ICS sharing setup.
+another ICS sharing setup. Windows ICS also requires a real private network
+adapter; it cannot use a loopback adapter as the shared/private side.
 
 ### Linux
 

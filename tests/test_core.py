@@ -543,6 +543,11 @@ def test_windows_nat_plan_uses_rras_or_ics_only() -> None:
     assert '"routing", "ip", "nat"' in rendered
     assert "Invoke-RrasNat" in rendered
     assert "Invoke-IcsNat" in rendered
+    assert "Format-IcsError" in rendered
+    assert "specified cast is invalid" in rendered
+    assert "Windows ICS cannot use loopback adapter" in rendered
+    assert "RRAS NAT is not available or rejected public interface" in rendered
+    assert "*> $null" in rendered
     assert "Set-Service" in rendered
     assert "SharedAccess" in rendered
     assert 'InterfaceAlias $InterfaceAlias' in rendered

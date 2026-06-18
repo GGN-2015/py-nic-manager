@@ -796,11 +796,14 @@ function Get-BestInternalInterface {
     $prefix = ConvertTo-IPv4NetworkPrefix $address.IPAddress ([int]$address.PrefixLength)
     if (Test-IPv4PrefixOverlap $SourcePrefix $prefix) {
       $score = if ($prefix -eq $SourcePrefix) { 0 } else { 1 }
+      $adapter = Get-NetAdapter -InterfaceIndex $address.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue
+      $isLoopback = [bool]($adapter.InterfaceDescription -match "Loopback|KM-TEST|Npcap Loopback")
       $candidates += [pscustomobject]@{
         InterfaceAlias = [string]$address.InterfaceAlias
         Prefix = $prefix
         PrefixLength = [int]$address.PrefixLength
         Score = $score
+        IsLoopback = $isLoopback
       }
     }
   }
@@ -833,6 +836,7 @@ function Get-BestInternalInterface {
       Prefix = [string]$route.DestinationPrefix
       PrefixLength = Get-IPv4PrefixLength $route.DestinationPrefix
       Score = 2
+      IsLoopback = [bool]($route.InterfaceAlias -match "Loopback|KM-TEST|Npcap Loopback")
     }
   }
   $null
@@ -840,14 +844,27 @@ function Get-BestInternalInterface {
 
 function Invoke-Netsh {
   param(
-    [string[]]$Arguments,
-    [switch]$AllowFailure
+    [string[]]$Arguments
   )
-  $output = & netsh @Arguments 2>&1
-  if ($LASTEXITCODE -ne 0 -and -not $AllowFailure) {
-    throw (($output | Out-String).Trim())
+  & netsh @Arguments *> $null
+  $LASTEXITCODE -eq 0
+}
+
+function Invoke-RrasDeleteInterface {
+  param([string]$InterfaceName)
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$InterfaceName") | Out-Null
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", $InterfaceName) | Out-Null
+}
+
+function Invoke-RrasAddInterface {
+  param([string]$InterfaceName, [string]$Mode)
+  if (Invoke-Netsh -Arguments @("routing", "ip", "nat", "add", "interface", "name=$InterfaceName", "mode=$Mode")) {
+    return $true
   }
-  $output
+  if (Invoke-Netsh -Arguments @("routing", "ip", "nat", "add", "interface", $InterfaceName, $Mode)) {
+    return $true
+  }
+  $false
 }
 
 function Invoke-RrasNat {
@@ -855,12 +872,27 @@ function Invoke-RrasNat {
     throw "netsh.exe was not found."
   }
   Start-ServiceIfPresent "RemoteAccess"
-  Invoke-Netsh -Arguments @("routing", "ip", "nat", "install") -AllowFailure | Out-Null
-  Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$outboundInterface") -AllowFailure | Out-Null
-  Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$internalInterface") -AllowFailure | Out-Null
-  Invoke-Netsh -Arguments @("routing", "ip", "nat", "add", "interface", "name=$outboundInterface", "mode=full") | Out-Null
-  Invoke-Netsh -Arguments @("routing", "ip", "nat", "add", "interface", "name=$internalInterface", "mode=private") | Out-Null
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "install") | Out-Null
+  Invoke-RrasDeleteInterface $outboundInterface
+  Invoke-RrasDeleteInterface $internalInterface
+  if (-not (Invoke-RrasAddInterface $outboundInterface "full")) {
+    throw "RRAS NAT is not available or rejected public interface '$outboundInterface'."
+  }
+  if (-not (Invoke-RrasAddInterface $internalInterface "private")) {
+    throw "RRAS NAT is not available or rejected private interface '$internalInterface'."
+  }
   "RRAS"
+}
+
+function Format-IcsError {
+  param([string]$Message, [string]$InterfaceName)
+  if ($Message -match "指定的转换无效|Specified cast is not valid") {
+    return "ICS COM rejected interface '$InterfaceName' (specified cast is invalid). Windows ICS usually reports this when the selected interface type is not supported for sharing."
+  }
+  if (-not $Message) {
+    return "ICS COM rejected interface '$InterfaceName'."
+  }
+  $Message
 }
 
 function Get-IcsConnection {
@@ -876,6 +908,35 @@ function Get-IcsConnection {
     }
   }
   $null
+}
+
+function Disable-IcsConnection {
+  param($Entry)
+  if (-not $Entry -or -not $Entry.Config -or -not $Entry.Config.SharingEnabled) { return }
+  try {
+    $Entry.Config.DisableSharing() | Out-Null
+  } catch {
+    try {
+      $Entry.Config.GetType().InvokeMember("DisableSharing", [System.Reflection.BindingFlags]::InvokeMethod, $null, $Entry.Config, @()) | Out-Null
+    } catch {}
+  }
+  Start-Sleep -Milliseconds 300
+}
+
+function Enable-IcsConnection {
+  param($Entry, [int]$SharingType)
+  try {
+    $Entry.Config.EnableSharing($SharingType) | Out-Null
+    return
+  } catch {
+    $firstError = $_.Exception.Message
+  }
+  try {
+    $Entry.Config.GetType().InvokeMember("EnableSharing", [System.Reflection.BindingFlags]::InvokeMethod, $null, $Entry.Config, @([int]$SharingType)) | Out-Null
+  } catch {
+    $detail = Format-IcsError ($firstError + "; " + $_.Exception.Message) ([string]$Entry.Properties.Name)
+    throw $detail
+  }
 }
 
 function Invoke-IcsNat {
@@ -896,17 +957,16 @@ function Invoke-IcsNat {
     if ($config.SharingEnabled) {
       $sharingType = [int]$config.SharingConnectionType
       if ($sharingType -eq 0 -or [string]$props.Name -eq $outboundInterface -or [string]$props.Name -eq $internalInterface) {
-        $config.DisableSharing() | Out-Null
-        Start-Sleep -Milliseconds 300
+        Disable-IcsConnection ([pscustomobject]@{ Config = $config; Properties = $props })
       }
     }
   }
 
   $public = Get-IcsConnection $manager $outboundInterface
   $private = Get-IcsConnection $manager $internalInterface
-  $public.Config.EnableSharing(0) | Out-Null
+  Enable-IcsConnection $public 0
   Start-Sleep -Milliseconds 500
-  $private.Config.EnableSharing(1) | Out-Null
+  Enable-IcsConnection $private 1
   "ICS"
 }
 
@@ -950,10 +1010,14 @@ try {
   $errors += ("RRAS: " + $_.Exception.Message)
 }
 if (-not $method) {
-  try {
-    $method = Invoke-IcsNat
-  } catch {
-    $errors += ("ICS: " + $_.Exception.Message)
+  if ([bool]$internalCandidate.IsLoopback) {
+    $errors += ("ICS: Windows ICS cannot use loopback adapter '$internalInterface' as the private/shared interface. Use a real private adapter for '$sourceCidr', or configure RRAS NAT on a Windows edition where RRAS is available.")
+  } else {
+    try {
+      $method = Invoke-IcsNat
+    } catch {
+      $errors += ("ICS: " + (Format-IcsError $_.Exception.Message $internalInterface))
+    }
   }
 }
 if (-not $method) {
