@@ -30,7 +30,7 @@ NatRef = NatRule | str
 VirtualAdapterRef = VirtualAdapterInfo | str | int
 SnapshotRef = NetworkSnapshot | str | Path
 
-ADAPTER_SORT_COLUMNS = {"index", "name", "status", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"}
+ADAPTER_SORT_COLUMNS = {"index", "name", "status", "admin", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"}
 ROUTE_SORT_COLUMNS = {
     "destination",
     "gateway",
@@ -281,6 +281,21 @@ class NetworkManager:
     ) -> list[CommandResult]:
         return self.run_plan(
             self.plan_set_adapter_forwarding(adapter, enabled),
+            require_admin=require_admin,
+        )
+
+    def plan_set_adapter_admin(self, adapter: AdapterRef, enabled: bool) -> OperationPlan:
+        return self.backend.plan_adapter_admin_update(self.find_adapter(adapter), bool(enabled))
+
+    def set_adapter_admin(
+        self,
+        adapter: AdapterRef,
+        enabled: bool,
+        *,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_set_adapter_admin(adapter, enabled),
             require_admin=require_admin,
         )
 
@@ -625,6 +640,7 @@ def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int
     values = {
         "name": adapter.name,
         "status": adapter.status,
+        "admin": _format_admin_enabled(adapter.admin_enabled),
         "forwarding": _format_forwarding(adapter.forwarding_enabled),
         "ics": _format_ics_compatible(adapter),
         "ipv4": "" if ipv4 is None else _format_address(ipv4),
@@ -803,6 +819,12 @@ def _future_result_or(future, fallback):
 
 
 def _format_forwarding(value: bool | None) -> str:
+    if value is None:
+        return "Unknown"
+    return "Enabled" if value else "Disabled"
+
+
+def _format_admin_enabled(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"

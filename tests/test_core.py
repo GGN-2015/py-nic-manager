@@ -474,6 +474,19 @@ def test_windows_forwarding_plan_uses_netipinterface() -> None:
     assert "-Forwarding Disabled" in rendered
 
 
+def test_windows_adapter_admin_plan_uses_netadapter_admin_state() -> None:
+    backend = WindowsBackend(dry_run=True)
+    adapter = AdapterInfo(id="id", name="Ethernet")
+
+    disable_plan = backend.plan_adapter_admin_update(adapter, False)
+    enable_plan = backend.plan_adapter_admin_update(adapter, True)
+
+    assert "Disable-NetAdapter" in " ".join(disable_plan.commands[0])
+    assert "Enable-NetAdapter" in " ".join(enable_plan.commands[0])
+    assert disable_plan.title == "Disable adapter"
+    assert enable_plan.title == "Enable adapter"
+
+
 def test_windows_global_forwarding_plan_updates_ip_enable_router() -> None:
     backend = WindowsBackend(dry_run=True)
 
@@ -709,6 +722,42 @@ def test_windows_tap_create_cleans_up_adapter_after_post_create_failure(
 
     assert ("remove", r"ROOT\\TAP0901\\0001") in calls
     assert ("wait", 15) in calls
+
+
+def test_windows_tap_create_sets_media_status_always_connected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    driver_dir = tmp_path / "driver"
+    driver_dir.mkdir()
+    (driver_dir / "OemVista.inf").write_text("", encoding="utf-8")
+    (driver_dir / "devcon.exe").write_text("", encoding="utf-8")
+    adapter = {
+        "Name": "py-virtual0",
+        "InterfaceIndex": 77,
+        "PnPDeviceID": r"ROOT\\TAP0901\\0001",
+    }
+    calls: list[tuple[str, object]] = []
+    powershell_scripts: list[str] = []
+
+    monkeypatch.setattr(windows_tap, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(windows_tap, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(windows_tap, "ensure_ndis_device_install_policy", lambda: None)
+    monkeypatch.setattr(windows_tap, "_load_state", lambda name: {})
+    monkeypatch.setattr(windows_tap, "_adapter_info", lambda name: None)
+    monkeypatch.setattr(windows_tap, "_net_adapters", lambda: [])
+    monkeypatch.setattr(windows_tap, "_tap_driver_dir", lambda: driver_dir)
+    monkeypatch.setattr(windows_tap, "_run", lambda command: calls.append(("run", command)) or "")
+    monkeypatch.setattr(windows_tap, "_run_powershell", lambda script: powershell_scripts.append(script) or "")
+    monkeypatch.setattr(windows_tap, "_wait_for_new_adapter", lambda name, before, timeout: adapter)
+    monkeypatch.setattr(windows_tap, "assert_ndis_net_adapter", lambda **kwargs: None)
+    monkeypatch.setattr(windows_tap, "_configure_address", lambda name, address: calls.append(("address", address)))
+    monkeypatch.setattr(windows_tap, "_save_state", lambda name, state: calls.append(("state", state)))
+
+    windows_tap.create_virtual_adapter("py-virtual0", "192.168.56.1/24")
+
+    rendered = "\n".join(powershell_scripts)
+    assert 'RegistryKeyword "MediaStatus"' in rendered
+    assert 'RegistryValue "1"' in rendered
+    assert "Disable-NetAdapter" in rendered
+    assert "Enable-NetAdapter" in rendered
 
 
 def test_windows_wintun_configures_address_by_interface_index(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -968,6 +1017,7 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
         mac="00:11:22:33:44:66",
     )
     forwarding_plan = manager.plan_set_adapter_forwarding("Ethernet", False)
+    admin_plan = manager.plan_set_adapter_admin("Ethernet", False)
     global_forwarding_plan = manager.plan_set_global_forwarding(True)
     create_loopback_plan = manager.plan_create_loopback()
     delete_loopback_plan = manager.plan_delete_loopback("py-loopback0")
@@ -1004,6 +1054,7 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     assert snapshot.adapters[0].name == "Ethernet"
     assert any("netsh" in command[0].lower() for command in adapter_plan.commands)
     assert "Set-NetIPInterface" in " ".join(forwarding_plan.commands[0])
+    assert "Disable-NetAdapter" in " ".join(admin_plan.commands[0])
     assert global_forwarding_plan.restart_required is True
     assert "IPEnableRouter" in " ".join(global_forwarding_plan.commands[0])
     assert "py-loopback1" in create_loopback_plan.commands[0]
@@ -1089,9 +1140,10 @@ class _FakeWindowsBackend(WindowsBackend):
                 status="Up",
                 addresses=[AddressInfo("192.0.2.10", 24)],
                 gateways=["192.0.2.1"],
-                dns_servers=["1.1.1.1"],
-                dhcp_enabled=False,
-                forwarding_enabled=True,
+            dns_servers=["1.1.1.1"],
+            dhcp_enabled=False,
+            admin_enabled=True,
+            forwarding_enabled=True,
             ),
             AdapterInfo(
                 id="loopback-id",
@@ -1100,6 +1152,7 @@ class _FakeWindowsBackend(WindowsBackend):
                 status="Up",
                 addresses=[AddressInfo("192.0.2.20", 24)],
                 is_loopback=True,
+                admin_enabled=True,
                 forwarding_enabled=False,
             ),
             AdapterInfo(
@@ -1110,6 +1163,7 @@ class _FakeWindowsBackend(WindowsBackend):
                 addresses=[AddressInfo("192.168.56.1", 24)],
                 is_virtual=True,
                 virtual_kind="wintun",
+                admin_enabled=True,
                 forwarding_enabled=True,
             ),
         ]
@@ -1132,5 +1186,6 @@ class _FakeWindowsBackend(WindowsBackend):
                 address="192.168.56.1/24",
                 source_cidr="192.168.56.0/24",
                 backend_id="virtual-id",
+                admin_enabled=True,
             )
         ]

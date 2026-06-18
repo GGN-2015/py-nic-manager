@@ -177,7 +177,7 @@ class NetworkManagerApp(tk.Tk):
     def _build_adapters_tab(self) -> None:
         self.adapters_paned, table_frame, panel = self._build_split_tab(self.adapters_tab)
 
-        columns = ("index", "status", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind")
+        columns = ("index", "status", "admin", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind")
         self.adapter_tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -187,6 +187,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("#0", "Adapter", "name")
         self._set_adapter_heading("index", "Index", "index")
         self._set_adapter_heading("status", "Status", "status")
+        self._set_adapter_heading("admin", "Admin", "admin")
         self._set_adapter_heading("forwarding", "IP Forwarding", "forwarding")
         self._set_adapter_heading("ics", "ICS Compatible", "ics")
         self._set_adapter_heading("ipv4", "IPv4", "ipv4")
@@ -197,6 +198,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("#0", width=190, minwidth=160)
         self.adapter_tree.column("index", width=70, anchor="center")
         self.adapter_tree.column("status", width=90, anchor="center")
+        self.adapter_tree.column("admin", width=85, anchor="center")
         self.adapter_tree.column("forwarding", width=105, anchor="center")
         self.adapter_tree.column("ics", width=115, anchor="center")
         self.adapter_tree.column("ipv4", width=170)
@@ -251,45 +253,59 @@ class NetworkManagerApp(tk.Tk):
         )
         self.apply_forwarding_button.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         self._admin_only_widgets.append(self.apply_forwarding_button)
+        self.enable_adapter_button = ttk.Button(
+            panel,
+            text="Enable Selected Adapter",
+            command=lambda: self.set_selected_adapter_admin(True),
+        )
+        self.enable_adapter_button.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self._admin_only_widgets.append(self.enable_adapter_button)
+        self.disable_adapter_button = ttk.Button(
+            panel,
+            text="Disable Selected Adapter",
+            command=lambda: self.set_selected_adapter_admin(False),
+        )
+        self.disable_adapter_button.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        self._admin_only_widgets.append(self.disable_adapter_button)
 
-        ttk.Separator(panel).grid(row=11, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Label(panel, text="Loopback", style="Header.TLabel").grid(row=12, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Separator(panel).grid(row=13, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Label(panel, text="Loopback", style="Header.TLabel").grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.loopback_name_var = tk.StringVar(value=self._last_suggested_loopback_value)
-        self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 13, admin_required=True)
+        self._labeled_entry(panel, "Name or alias/address", self.loopback_name_var, 15, admin_required=True)
         self.create_loopback_button = ttk.Button(
             panel,
             text="Create Loopback",
             command=self.create_loopback,
         )
-        self.create_loopback_button.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.create_loopback_button.grid(row=16, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._admin_only_widgets.append(self.create_loopback_button)
         self.delete_loopback_button = ttk.Button(
             panel,
             text="Delete Selected Loopback",
             command=self.delete_selected_loopback,
         )
-        self.delete_loopback_button.grid(row=15, column=0, columnspan=2, sticky="ew")
+        self.delete_loopback_button.grid(row=17, column=0, columnspan=2, sticky="ew")
         self._admin_only_widgets.append(self.delete_loopback_button)
 
-        ttk.Separator(panel).grid(row=16, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Label(panel, text="Virtual NIC", style="Header.TLabel").grid(row=17, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Separator(panel).grid(row=18, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Label(panel, text="Virtual NIC", style="Header.TLabel").grid(row=19, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.virtual_name_var = tk.StringVar(value=self._last_suggested_virtual_value)
         self.virtual_address_var = tk.StringVar(value="192.168.56.1/24")
-        self._labeled_entry(panel, "Name", self.virtual_name_var, 18, admin_required=True)
-        self._labeled_entry(panel, "IPv4 CIDR", self.virtual_address_var, 19, admin_required=True)
+        self._labeled_entry(panel, "Name", self.virtual_name_var, 20, admin_required=True)
+        self._labeled_entry(panel, "IPv4 CIDR", self.virtual_address_var, 21, admin_required=True)
         self.create_virtual_button = ttk.Button(
             panel,
             text="Create Virtual NIC",
             command=self.create_virtual_adapter,
         )
-        self.create_virtual_button.grid(row=20, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.create_virtual_button.grid(row=22, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._admin_only_widgets.append(self.create_virtual_button)
         self.delete_virtual_button = ttk.Button(
             panel,
             text="Delete Selected Virtual NIC",
             command=self.delete_selected_virtual_adapter,
         )
-        self.delete_virtual_button.grid(row=21, column=0, columnspan=2, sticky="ew")
+        self.delete_virtual_button.grid(row=23, column=0, columnspan=2, sticky="ew")
         self._admin_only_widgets.append(self.delete_virtual_button)
 
     def _build_routes_tab(self) -> None:
@@ -523,7 +539,9 @@ class NetworkManagerApp(tk.Tk):
                 values=(
                     index,
                     adapter.status,
+                    _format_admin_enabled(adapter.admin_enabled),
                     _format_forwarding(adapter.forwarding_enabled),
+                    _format_ics_compatible(adapter),
                     _format_address(ipv4),
                     adapter.mac,
                     ", ".join(adapter.gateways),
@@ -546,6 +564,7 @@ class NetworkManagerApp(tk.Tk):
             "name": ("#0", "Adapter"),
             "index": ("index", "Index"),
             "status": ("status", "Status"),
+            "admin": ("admin", "Admin"),
             "forwarding": ("forwarding", "IP Forwarding"),
             "ics": ("ics", "ICS Compatible"),
             "ipv4": ("ipv4", "IPv4"),
@@ -583,6 +602,7 @@ class NetworkManagerApp(tk.Tk):
             "name": adapter.name,
             "index": str(index),
             "status": adapter.status,
+            "admin": _format_admin_enabled(adapter.admin_enabled),
             "forwarding": _format_forwarding(adapter.forwarding_enabled),
             "ics": _format_ics_compatible(adapter),
             "ipv4": _format_address(ipv4),
@@ -789,6 +809,18 @@ class NetworkManagerApp(tk.Tk):
             plan = self.backend.plan_adapter_forwarding_update(adapter, self.adapter_forwarding_var.get())
         except BackendError as exc:
             messagebox.showerror("Forwarding Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def set_selected_adapter_admin(self, enabled: bool) -> None:
+        adapter = self._selected_adapter()
+        if adapter is None:
+            messagebox.showinfo("No Adapter Selected", "Select an adapter first.")
+            return
+        try:
+            plan = self.backend.plan_adapter_admin_update(adapter, enabled)
+        except BackendError as exc:
+            messagebox.showerror("Adapter State Error", str(exc))
             return
         self._confirm_and_run(plan)
 
@@ -1386,6 +1418,12 @@ def _future_result_or(future, fallback, label: str = "Optional state", errors: l
 
 
 def _format_forwarding(value: bool | None) -> str:
+    if value is None:
+        return "Unknown"
+    return "Enabled" if value else "Disabled"
+
+
+def _format_admin_enabled(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"

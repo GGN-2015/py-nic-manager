@@ -21,8 +21,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 
 - View network adapters, non-loopback virtual NICs, IPv4 addresses, MAC
   addresses, gateways, DNS servers,
-  DHCP state, global and per-adapter IPv4 router-forwarding state, and
-  loopback status.
+  DHCP state, administrative enable/disable state, global and per-adapter IPv4
+  router-forwarding state, and loopback status.
 - Edit existing adapter IPv4 address, prefix length, gateway, DNS servers, MAC
   address, and DHCP mode where the operating system backend supports it.
 - Create, edit, and delete loopback-style adapters:
@@ -41,6 +41,7 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 - Enable or disable global IPv4 router forwarding on supported systems.
 - Enable or disable IPv4 router forwarding for a selected adapter where the
   operating system backend supports per-interface forwarding.
+- Enable or disable a selected adapter's administrative state.
 - Export the current adapters, virtual NICs, routes, NAT rules, and global
   forwarding state to a JSON configuration snapshot.
 - Import a saved snapshot and apply it as a best-effort one-click restore after
@@ -150,6 +151,10 @@ often rejects it as the private/shared interface. TAP assets keep their GPLv2
 license in `py_nic_manager/assets/tap-windows6/COPYRIGHT.GPL`; Wintun binaries
 keep their WireGuard LLC prebuilt-binaries license in
 `py_nic_manager/assets/wintun/LICENSE.txt`.
+Py NIC Manager sets created TAP adapters to TAP's "Always Connected" media
+mode. The table still separates `Status` from `Admin`: `Status` is Windows'
+media/link state, while `Admin` is the enable/disable state controlled by the
+Enable/Disable buttons.
 Use the virtual NIC's source CIDR as the NAT internal network. The adapter list
 shows an "ICS Compatible" column so the selected internal interface is not a
 guess.

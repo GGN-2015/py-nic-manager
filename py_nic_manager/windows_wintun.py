@@ -197,6 +197,7 @@ def _virtual_item(name: str, adapter: dict[str, object] | None, state: dict[str,
         "persistent": True,
         "managed": bool(state),
         "backend_id": str(adapter.get("PnPDeviceID", "")) if adapter else "",
+        "admin_enabled": str(adapter.get("AdminStatus", "")).lower() == "up" if adapter else None,
         "ics_compatible": False,
         "ics_note": "Wintun is a layer-3 TUN adapter. Windows ICS often rejects it as a private/shared interface.",
     }
@@ -325,7 +326,7 @@ def _net_adapters() -> list[dict[str, object]]:
 Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
   Where-Object { $_.InterfaceDescription -match "Wintun|WireGuard|PyNIC" -or $_.Name -like "py-virtual*" } |
   Sort-Object -Property InterfaceIndex |
-  Select-Object Name, InterfaceIndex, InterfaceDescription, Status, PnPDeviceID |
+  Select-Object Name, InterfaceIndex, InterfaceDescription, Status, AdminStatus, PnPDeviceID |
   ConvertTo-Json -Depth 4
 """
     result = _run_powershell(script)

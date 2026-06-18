@@ -97,6 +97,10 @@ class BaseBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_global_forwarding_enabled(self) -> bool | None:
         raise NotImplementedError
 
@@ -172,6 +176,11 @@ class BaseBackend(ABC):
             restart_required = restart_required or plan.restart_required
             if saved.forwarding_enabled is not None:
                 plan = self.plan_adapter_forwarding_update(current, saved.forwarding_enabled)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
+            if saved.admin_enabled is not None:
+                plan = self.plan_adapter_admin_update(current, saved.admin_enabled)
                 commands.extend(plan.commands)
                 notes.extend(plan.notes)
                 restart_required = restart_required or plan.restart_required
@@ -353,6 +362,7 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     description = [string]$adapter.InterfaceDescription
     mac = [string]$adapter.MacAddress
     status = [string]$adapter.Status
+    admin_enabled = [bool]($adapter.AdminStatus -eq "Up")
     dhcp_enabled = [bool]($config.NetIPv4Interface.Dhcp -eq "Enabled")
     is_loopback = $isLoopback
     forwarding_enabled = [bool]($ipInterface.Forwarding -eq "Enabled")
@@ -684,6 +694,15 @@ if ($device) {{
             f'-AddressFamily IPv4 -Forwarding {value}'
         )
         return OperationPlan("Update adapter forwarding", [_powershell(script)])
+
+    def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        command = "Enable-NetAdapter" if enabled else "Disable-NetAdapter"
+        script = f'{command} -Name "{_ps_escape(adapter.name)}" -Confirm:$false'
+        return OperationPlan(
+            "Enable adapter" if enabled else "Disable adapter",
+            [_powershell(script)],
+            ["This changes the adapter administrative state, not just the displayed media/link status."],
+        )
 
     def get_global_forwarding_enabled(self) -> bool | None:
         script = r"""
@@ -1262,6 +1281,7 @@ class LinuxBackend(BaseBackend):
                     ],
                     dns_servers=dns_by_iface.get(name, []),
                     dhcp_enabled=None,
+                    admin_enabled=bool("UP" in item.get("flags", [])),
                     is_loopback=bool(item.get("link_type") in {"loopback", "dummy"} or name == "lo"),
                     is_virtual=bool(item.get("link_type") in {"veth", "tun", "tap"} or name.startswith("py-virtual")),
                     virtual_kind=str(item.get("link_type", "")) if item.get("link_type") in {"veth", "tun", "tap"} else "",
@@ -1297,6 +1317,7 @@ class LinuxBackend(BaseBackend):
                     persistent=False,
                     managed=name.startswith("py-virtual"),
                     backend_id=name,
+                    admin_enabled=bool("UP" in item.get("flags", [])),
                 )
             )
         return items
@@ -1453,6 +1474,14 @@ class LinuxBackend(BaseBackend):
             [["sysctl", "-w", f"net.ipv4.conf.{adapter.name}.forwarding={value}"]],
         )
 
+    def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "up" if enabled else "down"
+        return OperationPlan(
+            "Enable adapter" if enabled else "Disable adapter",
+            [["ip", "link", "set", "dev", adapter.name, state]],
+            ["This changes the Linux link administrative state."],
+        )
+
     def get_global_forwarding_enabled(self) -> bool | None:
         path = "/proc/sys/net/ipv4/ip_forward"
         try:
@@ -1529,6 +1558,7 @@ class MacOSBackend(BaseBackend):
 
     def list_adapters(self) -> list[AdapterInfo]:
         services = self._services()
+        enabled_services = self._enabled_services()
         global_forwarding = self._global_forwarding_enabled()
         disabled_forwarding = self._forwarding_disabled_interfaces()
         adapters: list[AdapterInfo] = []
@@ -1557,6 +1587,7 @@ class MacOSBackend(BaseBackend):
                     gateways=[info["router"]] if info["router"] else [],
                     dns_servers=self._dns_for_service(service),
                     dhcp_enabled=info["method"].lower() == "dhcp",
+                    admin_enabled=None if enabled_services is None else service in enabled_services,
                     is_loopback=service.lower().startswith("loopback") or device.startswith("lo"),
                     is_virtual=bool(device.startswith(("utun", "tun", "tap", "bridge", "gif", "stf"))),
                     virtual_kind=_virtual_kind_from_name(device),
@@ -1724,6 +1755,24 @@ class MacOSBackend(BaseBackend):
             ],
         )
 
+    def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "on" if enabled else "off"
+        if adapter.name and not adapter.is_virtual and not adapter.id.startswith("lo0:"):
+            return OperationPlan(
+                "Enable adapter" if enabled else "Disable adapter",
+                [["networksetup", "-setnetworkserviceenabled", adapter.name, state]],
+                ["This changes the macOS network service administrative state."],
+            )
+        device = adapter.description or adapter.id or adapter.name
+        if not device or adapter.id.startswith("lo0:"):
+            raise BackendError("A real macOS network device is required for enable/disable changes.")
+        link_state = "up" if enabled else "down"
+        return OperationPlan(
+            "Enable adapter" if enabled else "Disable adapter",
+            [["ifconfig", device, link_state]],
+            ["This changes the macOS interface administrative state."],
+        )
+
     def get_global_forwarding_enabled(self) -> bool | None:
         return self._global_forwarding_enabled()
 
@@ -1763,6 +1812,19 @@ class MacOSBackend(BaseBackend):
             elif line.startswith("Device:") and current:
                 services[current] = line.split(":", 1)[1].strip()
                 current = ""
+        return services
+
+    def _enabled_services(self) -> set[str] | None:
+        result = self.run(["networksetup", "-listallnetworkservices"])
+        if not result.ok:
+            return None
+        services: set[str] = set()
+        for line in result.stdout.splitlines():
+            text = line.strip()
+            if not text or text.startswith("An asterisk"):
+                continue
+            if not text.startswith("*"):
+                services.add(text)
         return services
 
     def _networksetup_getinfo(self, service: str) -> dict[str, str]:
@@ -1937,6 +1999,14 @@ class GenericPosixBackend(BaseBackend):
             [f"Per-interface IPv4 forwarding is not portable on this POSIX system; requested {state}."],
         )
 
+    def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "up" if enabled else "down"
+        return OperationPlan(
+            "Enable adapter" if enabled else "Disable adapter",
+            [["ifconfig", adapter.name, state]],
+            ["This changes the POSIX interface administrative state through ifconfig."],
+        )
+
     def get_global_forwarding_enabled(self) -> bool | None:
         return None
 
@@ -2011,6 +2081,9 @@ class UnsupportedBackend(BaseBackend):
         raise BackendError(f"{self.name} is not supported yet.")
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         raise BackendError(f"{self.name} is not supported yet.")
 
     def get_global_forwarding_enabled(self) -> bool | None:
@@ -2241,6 +2314,7 @@ def _virtual_to_adapter_info(virtual: VirtualAdapterInfo) -> AdapterInfo:
         description=virtual.kind,
         status=virtual.status,
         addresses=[address] if address else [],
+        admin_enabled=virtual.admin_enabled,
         is_loopback=False,
         is_virtual=True,
         virtual_kind=virtual.kind,
@@ -2267,6 +2341,7 @@ def _ifconfig_virtual_adapters(output: str) -> list[VirtualAdapterInfo]:
                         persistent=current_name.startswith("bridge"),
                         managed=current_name.startswith(("py-virtual", "bridge")),
                         backend_id=current_name,
+                        admin_enabled=current_status == "up",
                     )
                 )
             current_name = header.group(1)
@@ -2290,6 +2365,7 @@ def _ifconfig_virtual_adapters(output: str) -> list[VirtualAdapterInfo]:
                 persistent=current_name.startswith("bridge"),
                 managed=current_name.startswith(("py-virtual", "bridge")),
                 backend_id=current_name,
+                admin_enabled=current_status == "up",
             )
         )
     return items
@@ -2570,6 +2646,7 @@ def _loopback_alias_adapters(output: str) -> list[AdapterInfo]:
                 description="lo0 alias",
                 status="up",
                 addresses=[AddressInfo(address, prefix, "ipv4")],
+                admin_enabled=True,
                 is_loopback=True,
             )
         )
@@ -2590,6 +2667,7 @@ def _parse_ifconfig_adapters(output: str) -> list[AdapterInfo]:
                 name=name,
                 description="",
                 status="up" if "UP" in line else "down",
+                admin_enabled="UP" in line,
                 is_loopback=name.startswith("lo"),
             )
             continue

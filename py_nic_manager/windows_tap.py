@@ -51,6 +51,7 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
             interface_index=adapter.get("InterfaceIndex"),
             pnp_device_id=str(adapter.get("PnPDeviceID", "")),
         )
+        _set_always_connected(clean_name)
         if address:
             _configure_address(clean_name, address)
         _save_state(
@@ -123,6 +124,7 @@ def _virtual_item(name: str, adapter: dict[str, object] | None, state: dict[str,
         "persistent": True,
         "managed": bool(state),
         "backend_id": str(adapter.get("PnPDeviceID", "")) if adapter else "",
+        "admin_enabled": str(adapter.get("AdminStatus", "")).lower() == "up" if adapter else None,
         "ics_compatible": True,
         "ics_note": "TAP-Windows6 is an Ethernet-like NDIS adapter and is the preferred Windows ICS private interface.",
     }
@@ -198,6 +200,20 @@ def _rename_adapter(current_name: str, new_name: str) -> None:
     _run_powershell(script)
 
 
+def _set_always_connected(name: str) -> None:
+    script = f"""
+$adapter = Get-NetAdapter -Name {_ps_quote(name)} -IncludeHidden -ErrorAction Stop
+$property = Get-NetAdapterAdvancedProperty -Name {_ps_quote(name)} -RegistryKeyword "MediaStatus" -ErrorAction SilentlyContinue
+if ($property) {{
+  Set-NetAdapterAdvancedProperty -Name {_ps_quote(name)} -RegistryKeyword "MediaStatus" -RegistryValue "1" -NoRestart -ErrorAction SilentlyContinue | Out-Null
+  Disable-NetAdapter -InputObject $adapter -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+  Start-Sleep -Milliseconds 500
+  Enable-NetAdapter -Name {_ps_quote(name)} -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+}}
+"""
+    _run_powershell(script)
+
+
 def _wait_for_new_adapter(name: str, before: list[dict[str, object]], timeout: int) -> dict[str, object]:
     before_ids = {str(item.get("PnPDeviceID", "")) for item in before}
     deadline = time.monotonic() + timeout
@@ -245,7 +261,7 @@ def _net_adapters() -> list[dict[str, object]]:
 Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
   Where-Object { $_.InterfaceDescription -match "TAP-Windows|TAP Adapter|tap0901" -or $_.Name -like "py-virtual*" } |
   Sort-Object -Property InterfaceIndex |
-  Select-Object Name, InterfaceIndex, InterfaceDescription, Status, PnPDeviceID |
+  Select-Object Name, InterfaceIndex, InterfaceDescription, Status, AdminStatus, PnPDeviceID |
   ConvertTo-Json -Depth 4
 """
     result = _run_powershell(script)

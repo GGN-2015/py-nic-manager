@@ -254,22 +254,23 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self.adapter_table = QTableWidget(0, 10)
+        self.adapter_table = QTableWidget(0, 11)
         self.adapter_table.setHorizontalHeaderLabels(
-            ["Adapter", "Index", "Status", "IP Forwarding", "ICS Compatible", "IPv4", "MAC", "Gateway", "DNS", "Type"]
+            ["Adapter", "Index", "Status", "Admin", "IP Forwarding", "ICS Compatible", "IPv4", "MAC", "Gateway", "DNS", "Type"]
         )
         self._configure_table(self.adapter_table)
         self.adapter_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
         self.adapter_table.setColumnWidth(0, 190)
         self.adapter_table.setColumnWidth(1, 70)
         self.adapter_table.setColumnWidth(2, 90)
-        self.adapter_table.setColumnWidth(3, 115)
-        self.adapter_table.setColumnWidth(4, 120)
-        self.adapter_table.setColumnWidth(5, 170)
-        self.adapter_table.setColumnWidth(6, 145)
-        self.adapter_table.setColumnWidth(7, 140)
-        self.adapter_table.setColumnWidth(8, 210)
-        self.adapter_table.setColumnWidth(9, 95)
+        self.adapter_table.setColumnWidth(3, 85)
+        self.adapter_table.setColumnWidth(4, 115)
+        self.adapter_table.setColumnWidth(5, 120)
+        self.adapter_table.setColumnWidth(6, 170)
+        self.adapter_table.setColumnWidth(7, 145)
+        self.adapter_table.setColumnWidth(8, 140)
+        self.adapter_table.setColumnWidth(9, 210)
+        self.adapter_table.setColumnWidth(10, 95)
         self.adapter_table.itemSelectionChanged.connect(self._on_adapter_select)
         splitter.addWidget(self.adapter_table)
 
@@ -310,9 +311,20 @@ class NetworkManagerQtWindow(QMainWindow):
         self.apply_adapter_button.clicked.connect(self.apply_selected_adapter)
         self.apply_forwarding_button = QPushButton("Apply Forwarding")
         self.apply_forwarding_button.clicked.connect(self.apply_selected_adapter_forwarding)
-        self._admin_only_widgets.extend([self.apply_adapter_button, self.apply_forwarding_button])
+        self.enable_adapter_button = QPushButton("Enable Selected Adapter")
+        self.enable_adapter_button.clicked.connect(lambda: self.set_selected_adapter_admin(True))
+        self.disable_adapter_button = QPushButton("Disable Selected Adapter")
+        self.disable_adapter_button.clicked.connect(lambda: self.set_selected_adapter_admin(False))
+        self._admin_only_widgets.extend([
+            self.apply_adapter_button,
+            self.apply_forwarding_button,
+            self.enable_adapter_button,
+            self.disable_adapter_button,
+        ])
         panel_layout.addWidget(self.apply_adapter_button)
         panel_layout.addWidget(self.apply_forwarding_button)
+        panel_layout.addWidget(self.enable_adapter_button)
+        panel_layout.addWidget(self.disable_adapter_button)
 
         panel_layout.addSpacing(4)
         panel_layout.addWidget(self._separator())
@@ -636,6 +648,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 adapter.name,
                 str(row),
                 adapter.status,
+                _format_admin_enabled(adapter.admin_enabled),
                 _format_forwarding(adapter.forwarding_enabled),
                 _format_ics_compatible(adapter),
                 _format_address(ipv4),
@@ -644,7 +657,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 ", ".join(adapter.dns_servers),
                 _adapter_kind(adapter),
             ]
-            sort_columns = ["name", "index", "status", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"]
+            sort_columns = ["name", "index", "status", "admin", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"]
             for column, value in enumerate(values):
                 item = _table_item(
                     value,
@@ -811,6 +824,18 @@ class NetworkManagerQtWindow(QMainWindow):
             plan = self.manager.plan_set_adapter_forwarding(adapter, self.adapter_forwarding_check.isChecked())
         except (BackendError, LookupError, ValueError) as exc:
             self._error("Forwarding Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def set_selected_adapter_admin(self, enabled: bool) -> None:
+        adapter = self._selected_adapter()
+        if adapter is None:
+            self._info("No Adapter Selected", "Select an adapter first.")
+            return
+        try:
+            plan = self.manager.plan_set_adapter_admin(adapter, enabled)
+        except (BackendError, LookupError, ValueError) as exc:
+            self._error("Adapter State Error", str(exc))
             return
         self._confirm_and_run(plan)
 
@@ -1337,6 +1362,12 @@ def _adapter_kind(adapter: AdapterInfo) -> str:
 
 
 def _format_forwarding(value: bool | None) -> str:
+    if value is None:
+        return "Unknown"
+    return "Enabled" if value else "Disabled"
+
+
+def _format_admin_enabled(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"

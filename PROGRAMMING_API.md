@@ -19,7 +19,7 @@ from py_nic_manager import NetworkManager
 manager = NetworkManager()
 
 for adapter in manager.list_adapters(sort_by="name"):
-    print(adapter.name, adapter.mac, adapter.forwarding_enabled)
+    print(adapter.name, adapter.mac, adapter.admin_enabled, adapter.forwarding_enabled)
 
 print("Global IPv4 forwarding:", manager.get_global_forwarding_enabled())
 
@@ -120,6 +120,8 @@ Adapters:
 - `set_global_forwarding(enabled, require_admin=True)`
 - `plan_set_adapter_forwarding(adapter, enabled)`
 - `set_adapter_forwarding(adapter, enabled, require_admin=True)`
+- `plan_set_adapter_admin(adapter, enabled)`
+- `set_adapter_admin(adapter, enabled, require_admin=True)`
 
 Loopbacks:
 
@@ -181,6 +183,7 @@ Every GUI operation has a headless equivalent:
 | Create virtual NIC | `plan_create_virtual_adapter()`, `create_virtual_adapter()` |
 | Delete virtual NIC | `plan_delete_virtual_adapter()`, `delete_virtual_adapter()` |
 | Set per-adapter IPv4 forwarding | `plan_set_adapter_forwarding()`, `set_adapter_forwarding()` |
+| Enable or disable an adapter | `plan_set_adapter_admin()`, `set_adapter_admin()` |
 | Set global IPv4 forwarding | `plan_set_global_forwarding()`, `set_global_forwarding()` |
 | Restart after a restart-required plan | `plan_restart_system()`, `restart_system()` |
 | Add route | `plan_add_route()`, `add_route()` |
@@ -209,6 +212,7 @@ Adapter sort columns:
 - `index`
 - `name`
 - `status`
+- `admin`
 - `forwarding`
 - `ics`
 - `ipv4`
@@ -339,6 +343,20 @@ Preview or set per-adapter IPv4 router forwarding:
 plan = manager.plan_set_adapter_forwarding("Ethernet", False)
 results = manager.set_adapter_forwarding("Ethernet", False)
 ```
+
+Preview or change the adapter administrative state:
+
+```python
+plan = manager.plan_set_adapter_admin("py-virtual0", True)
+results = manager.set_adapter_admin("py-virtual0", True)
+manager.set_adapter_admin("py-virtual0", False)
+```
+
+`AdapterInfo.status` reports the operating system's link or media state.
+`AdapterInfo.admin_enabled` reports the administrative enable/disable state.
+For TAP-style virtual NICs those can differ: Windows may report media
+`Disconnected` when a TAP adapter is enabled but no TAP application has opened
+the device.
 
 Platform behavior is the same as the GUI: Windows and Linux use native
 global and per-interface controls where the operating system exposes them.

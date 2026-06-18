@@ -80,6 +80,7 @@ class AdapterInfo:
     gateways: list[str] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
     dhcp_enabled: bool | None = None
+    admin_enabled: bool | None = None
     is_loopback: bool = False
     is_virtual: bool = False
     virtual_kind: str = ""
@@ -103,6 +104,7 @@ class AdapterInfo:
             gateways=[str(item) for item in data.get("gateways", [])],
             dns_servers=[str(item) for item in data.get("dns_servers", [])],
             dhcp_enabled=_optional_bool(data.get("dhcp_enabled")),
+            admin_enabled=_optional_bool(data.get("admin_enabled")),
             is_loopback=bool(data.get("is_loopback", False)),
             is_virtual=bool(data.get("is_virtual", False)),
             virtual_kind=str(data.get("virtual_kind", "")),
@@ -122,6 +124,7 @@ class AdapterInfo:
             "gateways": self.gateways,
             "dns_servers": self.dns_servers,
             "dhcp_enabled": self.dhcp_enabled,
+            "admin_enabled": self.admin_enabled,
             "is_loopback": self.is_loopback,
             "is_virtual": self.is_virtual,
             "virtual_kind": self.virtual_kind,
@@ -142,6 +145,7 @@ class VirtualAdapterInfo:
     persistent: bool = True
     managed: bool = True
     backend_id: str = ""
+    admin_enabled: bool | None = None
     ics_compatible: bool | None = None
     ics_note: str = ""
 
@@ -157,6 +161,7 @@ class VirtualAdapterInfo:
             persistent=bool(_optional_bool(data.get("persistent")) if data.get("persistent") is not None else True),
             managed=bool(_optional_bool(data.get("managed")) if data.get("managed") is not None else True),
             backend_id=str(data.get("backend_id", "")),
+            admin_enabled=_optional_bool(data.get("admin_enabled")),
             ics_compatible=_optional_bool(data.get("ics_compatible")),
             ics_note=str(data.get("ics_note", "")),
         )
@@ -172,6 +177,7 @@ class VirtualAdapterInfo:
             "persistent": self.persistent,
             "managed": self.managed,
             "backend_id": self.backend_id,
+            "admin_enabled": self.admin_enabled,
             "ics_compatible": self.ics_compatible,
             "ics_note": self.ics_note,
         }
