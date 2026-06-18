@@ -485,6 +485,9 @@ def test_windows_nat_plan_uses_persistent_winnat() -> None:
     assert "ExternalIPInterfaceAddressPrefix" in rendered
     assert 'InterfaceAlias $outboundInterface' in rendered
     assert '$outboundInterface = "WLAN"' in rendered
+    assert "4294967295" in rendered
+    assert "0xffffffff" not in rendered
+    assert "Test-IPv4PrefixOverlap" in rendered
 
 
 def test_windows_nat_requires_outbound_interface() -> None:

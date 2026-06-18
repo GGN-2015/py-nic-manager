@@ -548,20 +548,64 @@ New-ItemProperty `
             raise BackendError("A NAT rule name is required.")
         outbound_interface = _validate_nat_outbound_interface(rule.outbound_interface)
         script = rf"""
+function ConvertTo-IPv4UInt {{
+  param([string]$IPAddress)
+  $bytes = [System.Net.IPAddress]::Parse($IPAddress).GetAddressBytes()
+  return (
+    ([uint64]$bytes[0] -shl 24) -bor
+    ([uint64]$bytes[1] -shl 16) -bor
+    ([uint64]$bytes[2] -shl 8) -bor
+    [uint64]$bytes[3]
+  )
+}}
+
+function ConvertFrom-IPv4UInt {{
+  param([uint64]$Value)
+  $bytes = [byte[]]@(
+    [byte](($Value -shr 24) -band 255),
+    [byte](($Value -shr 16) -band 255),
+    [byte](($Value -shr 8) -band 255),
+    [byte]($Value -band 255)
+  )
+  [System.Net.IPAddress]::new($bytes).ToString()
+}}
+
+function Get-IPv4Mask {{
+  param([int]$PrefixLength)
+  if ($PrefixLength -eq 0) {{
+    return [uint64]0
+  }}
+  $hostCount = [uint64]1 -shl (32 - $PrefixLength)
+  return [uint64]4294967295 -bxor ($hostCount - 1)
+}}
+
 function ConvertTo-IPv4NetworkPrefix {{
   param([string]$IPAddress, [int]$PrefixLength)
-  $bytes = [System.Net.IPAddress]::Parse($IPAddress).GetAddressBytes()
-  [Array]::Reverse($bytes)
-  $value = [BitConverter]::ToUInt32($bytes, 0)
-  if ($PrefixLength -eq 0) {{
-    $mask = [uint32]0
+  $network = (ConvertTo-IPv4UInt $IPAddress) -band (Get-IPv4Mask $PrefixLength)
+  "$(ConvertFrom-IPv4UInt $network)/$PrefixLength"
+}}
+
+function Get-IPv4PrefixRange {{
+  param([string]$Prefix)
+  $address, $lengthText = $Prefix.Split("/", 2)
+  $prefixLength = [int]$lengthText
+  $network = (ConvertTo-IPv4UInt $address) -band (Get-IPv4Mask $prefixLength)
+  if ($prefixLength -eq 0) {{
+    $hostCount = [uint64]4294967296
   }} else {{
-    $mask = [uint32](([uint64]0xffffffff -shl (32 - $PrefixLength)) -band [uint64]0xffffffff)
+    $hostCount = [uint64]1 -shl (32 - $prefixLength)
   }}
-  $network = [uint32]($value -band $mask)
-  $networkBytes = [BitConverter]::GetBytes($network)
-  [Array]::Reverse($networkBytes)
-  "$([System.Net.IPAddress]::new($networkBytes))/$PrefixLength"
+  [pscustomobject]@{{
+    Start = $network
+    End = $network + $hostCount - 1
+  }}
+}}
+
+function Test-IPv4PrefixOverlap {{
+  param([string]$LeftPrefix, [string]$RightPrefix)
+  $left = Get-IPv4PrefixRange $LeftPrefix
+  $right = Get-IPv4PrefixRange $RightPrefix
+  ($left.Start -le $right.End) -and ($right.Start -le $left.End)
 }}
 
 $outboundInterface = "{_ps_escape(outbound_interface)}"
@@ -588,6 +632,9 @@ $externalAddress = $externalAddresses |
     PrefixLength |
   Select-Object -First 1
 $externalPrefix = ConvertTo-IPv4NetworkPrefix $externalAddress.IPAddress ([int]$externalAddress.PrefixLength)
+if (Test-IPv4PrefixOverlap "{_ps_escape(source)}" $externalPrefix) {{
+  throw "NAT source CIDR '{_ps_escape(source)}' overlaps outbound interface '$outboundInterface' prefix '$externalPrefix'. Choose the internal network behind this host, not the outbound interface's own LAN."
+}}
 Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue |
   Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
 New-NetNat `
