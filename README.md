@@ -132,6 +132,15 @@ Creating a Microsoft KM-TEST Loopback Adapter uses the built-in
 `%WINDIR%\inf\netloop.inf` driver directly. It does not require `devcon.exe` or
 the Windows Driver Kit.
 
+Windows loopback and Wintun virtual NIC creation both target the Windows
+Net/NDIS adapter class. Before creating either adapter type, Py NIC Manager
+updates the local Device Installation Restrictions policy to allow administrator
+installation, enable layered allow/deny evaluation, allow the Net setup class
+`{4d36e972-e325-11ce-bfc1-08002be10318}`, and remove local deny entries that
+explicitly match Py NIC Manager's loopback/Wintun device IDs. If a domain or MDM
+policy later reapplies a deny rule, Windows may still block installation; in
+that case the helper reports a policy-specific error instead of hiding it.
+
 Non-loopback virtual NIC creation uses Wintun. Py NIC Manager bundles the
 official platform-specific `wintun.dll` files from Wintun 0.14.1 under
 `py_nic_manager/assets/wintun/` so users do not need to install the Windows

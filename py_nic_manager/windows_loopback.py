@@ -12,6 +12,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from .backends import decode_command_output
+from .windows_device_policy import assert_ndis_net_adapter, ensure_ndis_device_install_policy
 
 
 HARDWARE_ID = "*MSLOOP"
@@ -47,14 +48,23 @@ def create_loopback_adapter(name: str = "") -> None:
     if not inf_path.exists():
         raise RuntimeError(f"Windows loopback driver INF was not found: {inf_path}")
 
+    ensure_ndis_device_install_policy()
     before = _loopback_adapters()
     _create_root_device(str(inf_path), HARDWARE_ID)
     time.sleep(2)
 
+    adapter = _find_created_adapter(before)
+    if not adapter:
+        raise RuntimeError("Windows loopback adapter did not appear in the NetAdapter/NDIS stack after creation.")
     if name:
-        adapter = _find_created_adapter(before)
         if adapter:
             _rename_adapter(adapter["Name"], name)
+    if adapter:
+        assert_ndis_net_adapter(
+            name=name or str(adapter.get("Name", "")),
+            interface_index=adapter.get("InterfaceIndex"),
+            pnp_device_id=str(adapter.get("PnPDeviceID", "")),
+        )
 
 
 def _create_root_device(inf_path: str, hardware_id: str) -> None:

@@ -613,6 +613,7 @@ $rules | Sort-Object -Property Name | ConvertTo-Json -Depth 4
             [
                 "Windows creates a Microsoft KM-TEST Loopback Adapter with the built-in netloop driver.",
                 "This uses Windows SetupAPI directly and does not require devcon.exe or the Windows Driver Kit.",
+                "Before creation, Py NIC Manager allows the Windows Net/NDIS setup class in local device installation policy.",
             ],
         )
 
@@ -646,6 +647,7 @@ if ($device) {{
             ]],
             [
                 "Windows creates a non-loopback Wintun virtual adapter using the wintun.dll bundled with Py NIC Manager.",
+                "Before creation, Py NIC Manager allows the Windows Net/NDIS setup class in local device installation policy.",
                 "The helper keeps the adapter alive with a background process and registers a startup task for persistence.",
                 "Use the virtual adapter's source CIDR as the NAT internal network.",
             ],

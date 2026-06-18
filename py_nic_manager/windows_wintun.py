@@ -14,6 +14,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from .backends import decode_command_output
+from .windows_device_policy import assert_ndis_net_adapter, ensure_ndis_device_install_policy
 
 
 POOL_NAME = "PyNicManager"
@@ -44,6 +45,7 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
     dll_path = _wintun_dll_path()
     state = _load_state(clean_name)
     if _adapter_exists(clean_name):
+        assert_ndis_net_adapter(name=clean_name)
         if address:
             _configure_address(clean_name, address)
         state.update({"name": clean_name, "dll_path": str(dll_path), "address": address, "stop_path": str(stop_path)})
@@ -51,6 +53,7 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
         print(f"Wintun adapter already exists: {clean_name}")
         return
 
+    ensure_ndis_device_install_policy()
     command = [
         sys.executable,
         "-m",
@@ -72,11 +75,16 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
         creationflags=creationflags,
     )
     try:
-        _wait_for_adapter(clean_name, timeout=25)
+        adapter = _wait_for_adapter(clean_name, timeout=25)
     except Exception:
         _terminate_process(process.pid)
         raise
     try:
+        assert_ndis_net_adapter(
+            name=clean_name,
+            interface_index=adapter.get("InterfaceIndex"),
+            pnp_device_id=str(adapter.get("PnPDeviceID", "")),
+        )
         if address:
             _configure_address(clean_name, address)
         task_name = _install_startup_task(clean_name, address)

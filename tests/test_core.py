@@ -19,6 +19,7 @@ from py_nic_manager.backends import (
 from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
+from py_nic_manager import windows_device_policy, windows_loopback
 from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
 from py_nic_manager.models import (
@@ -401,6 +402,55 @@ def test_windows_loopback_plan_uses_packaged_setupapi_helper() -> None:
     assert "devcon" not in rendered.lower()
 
 
+def test_windows_loopback_create_allows_ndis_policy_and_validates_net_class(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(windows_loopback, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(windows_loopback.os, "environ", {"WINDIR": str(tmp_path)})
+    (tmp_path / "inf").mkdir()
+    (tmp_path / "inf" / "netloop.inf").write_text("", encoding="utf-8")
+    monkeypatch.setattr(windows_loopback, "ensure_ndis_device_install_policy", lambda: calls.append(("policy", "")))
+    monkeypatch.setattr(
+        windows_loopback,
+        "_loopback_adapters",
+        lambda: [{"Name": "Loopback", "InterfaceIndex": 7, "PnPDeviceID": "ROOT\\NET\\0007"}],
+    )
+    monkeypatch.setattr(windows_loopback, "_create_root_device", lambda inf, hardware: calls.append(("create", hardware)))
+    monkeypatch.setattr(windows_loopback, "_rename_adapter", lambda old, new: calls.append(("rename", new)))
+    monkeypatch.setattr(windows_loopback, "time", type("FakeTime", (), {"sleep": staticmethod(lambda seconds: None)}))
+    monkeypatch.setattr(
+        windows_loopback,
+        "assert_ndis_net_adapter",
+        lambda **kwargs: calls.append(("ndis", kwargs["pnp_device_id"])),
+    )
+
+    windows_loopback.create_loopback_adapter("py-loopback0")
+
+    assert calls[0] == ("policy", "")
+    assert ("create", "*MSLOOP") in calls
+    assert ("rename", "py-loopback0") in calls
+    assert ("ndis", "ROOT\\NET\\0007") in calls
+
+
+def test_windows_device_policy_allows_net_ndis_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts: list[str] = []
+
+    monkeypatch.setattr(windows_device_policy, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(windows_device_policy, "_run_powershell", lambda script: scripts.append(script) or "")
+
+    windows_device_policy.ensure_ndis_device_install_policy()
+
+    assert len(scripts) == 1
+    assert "AllowAdminInstall" in scripts[0]
+    assert "AllowDenyLayered" in scripts[0]
+    assert "AllowDeviceClasses" in scripts[0]
+    assert windows_device_policy.NET_SETUP_CLASS_GUID in scripts[0]
+    assert "*MSLOOP" in scripts[0]
+    assert "WINTUN" in scripts[0]
+
+
 def test_windows_forwarding_plan_uses_netipinterface() -> None:
     backend = WindowsBackend(dry_run=True)
     adapter = AdapterInfo(id="id", name="Ethernet")
@@ -644,6 +694,7 @@ def test_windows_wintun_remove_adapter_uses_pnp_device_id(monkeypatch: pytest.Mo
 def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     popen_commands: list[list[str]] = []
     saved_states: list[dict[str, object]] = []
+    calls: list[tuple[str, object]] = []
 
     class FakeProcess:
         pid = 4321
@@ -658,6 +709,8 @@ def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.Mo
     monkeypatch.setattr(windows_wintun, "_wintun_dll_path", lambda: tmp_path / "wintun.dll")
     monkeypatch.setattr(windows_wintun, "_load_state", lambda name: {})
     monkeypatch.setattr(windows_wintun, "_adapter_exists", lambda name: False)
+    monkeypatch.setattr(windows_wintun, "ensure_ndis_device_install_policy", lambda: calls.append(("policy", "")))
+    monkeypatch.setattr(windows_wintun, "assert_ndis_net_adapter", lambda **kwargs: calls.append(("ndis", kwargs["interface_index"])))
     monkeypatch.setattr(windows_wintun.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(windows_wintun, "_wait_for_adapter", lambda name, timeout: {"Name": name, "InterfaceIndex": 42})
     monkeypatch.setattr(windows_wintun, "_install_startup_task", lambda name, address: "task")
@@ -666,6 +719,8 @@ def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.Mo
     windows_wintun.create_virtual_adapter("py-virtual0")
 
     assert len(popen_commands) == 1
+    assert ("policy", "") in calls
+    assert ("ndis", 42) in calls
     assert "--stop-file" in popen_commands[0]
     assert str(tmp_path) in popen_commands[0][popen_commands[0].index("--stop-file") + 1]
     assert saved_states[0]["stop_path"]
