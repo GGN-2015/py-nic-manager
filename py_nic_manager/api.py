@@ -11,13 +11,23 @@ from .admin import is_admin as default_admin_checker
 from .backends import BaseBackend, get_backend
 from .io import export_snapshot as write_snapshot
 from .io import import_snapshot as read_snapshot
-from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import (
+    AdapterInfo,
+    AddressInfo,
+    CommandResult,
+    NatRule,
+    NetworkSnapshot,
+    OperationPlan,
+    RouteInfo,
+    VirtualAdapterInfo,
+)
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
 
 AdapterRef = AdapterInfo | str | int
 RouteRef = RouteInfo | str
 NatRef = NatRule | str
+VirtualAdapterRef = VirtualAdapterInfo | str | int
 SnapshotRef = NetworkSnapshot | str | Path
 
 ADAPTER_SORT_COLUMNS = {"index", "name", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind"}
@@ -83,22 +93,27 @@ class NetworkManager:
             return rules
         return sort_nat_rules(rules, sort_by=sort_by, descending=descending)
 
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
+        return self.backend.list_virtual_adapters()
+
     def get_global_forwarding_enabled(self) -> bool | None:
         return self.backend.get_global_forwarding_enabled()
 
     def get_snapshot(self, *, concurrent: bool = True) -> NetworkSnapshot:
         if not concurrent:
             return self.backend.get_snapshot()
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             adapters_future = executor.submit(self.backend.list_adapters)
             routes_future = executor.submit(self.backend.list_routes)
             nat_future = executor.submit(self.backend.list_nat_rules)
+            virtual_future = executor.submit(self.backend.list_virtual_adapters)
             global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
             return NetworkSnapshot(
                 platform=self.backend.name,
                 adapters=adapters_future.result(),
                 routes=routes_future.result(),
                 nat_rules=_future_result_or(nat_future, []),
+                virtual_adapters=_future_result_or(virtual_future, []),
                 global_forwarding_enabled=_future_result_or(global_forwarding_future, None),
             )
 
@@ -186,8 +201,27 @@ class NetworkManager:
                 return current
         raise LookupError(f"NAT rule not found: {text}")
 
+    def find_virtual_adapter(self, adapter: VirtualAdapterRef) -> VirtualAdapterInfo:
+        if isinstance(adapter, VirtualAdapterInfo):
+            return adapter
+        adapters = self.backend.list_virtual_adapters()
+        if isinstance(adapter, int):
+            try:
+                return adapters[adapter]
+            except IndexError as exc:
+                raise LookupError(f"No virtual adapter exists at index {adapter}.") from exc
+        text = str(adapter).strip()
+        lowered = text.lower()
+        for current in adapters:
+            if current.name == text or current.name.lower() == lowered or current.backend_id == text:
+                return current
+        raise LookupError(f"Virtual adapter not found: {text}")
+
     def suggest_loopback_value(self, adapters: list[AdapterInfo] | None = None) -> str:
         return suggest_loopback_value(self.backend.name, adapters or self.backend.list_adapters())
+
+    def suggest_virtual_adapter_value(self, adapters: list[AdapterInfo] | None = None) -> str:
+        return suggest_virtual_adapter_value(self.backend.name, adapters or self.backend.list_adapters())
 
     def plan_update_adapter(
         self,
@@ -281,6 +315,37 @@ class NetworkManager:
 
     def delete_loopback(self, adapter: AdapterRef, *, require_admin: bool = True) -> list[CommandResult]:
         return self.run_plan(self.plan_delete_loopback(adapter), require_admin=require_admin)
+
+    def plan_create_virtual_adapter(
+        self,
+        name: str | None = None,
+        *,
+        address: AddressInfo | str | None = None,
+        prefix_length: int | str | None = None,
+    ) -> OperationPlan:
+        value = (name or self.suggest_virtual_adapter_value()).strip()
+        if not value:
+            raise ValueError("A virtual adapter name is required.")
+        return self.backend.plan_virtual_adapter_create(value, _coerce_address(address, prefix_length))
+
+    def create_virtual_adapter(
+        self,
+        name: str | None = None,
+        *,
+        address: AddressInfo | str | None = None,
+        prefix_length: int | str | None = None,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_create_virtual_adapter(name, address=address, prefix_length=prefix_length),
+            require_admin=require_admin,
+        )
+
+    def plan_delete_virtual_adapter(self, adapter: VirtualAdapterRef) -> OperationPlan:
+        return self.backend.plan_virtual_adapter_delete(self.find_virtual_adapter(adapter))
+
+    def delete_virtual_adapter(self, adapter: VirtualAdapterRef, *, require_admin: bool = True) -> list[CommandResult]:
+        return self.run_plan(self.plan_delete_virtual_adapter(adapter), require_admin=require_admin)
 
     def plan_update_loopback(
         self,
@@ -565,7 +630,7 @@ def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int
         "mac": adapter.mac,
         "gateway": ", ".join(adapter.gateways),
         "dns": ", ".join(adapter.dns_servers),
-        "kind": "Loopback" if adapter.is_loopback else "Physical",
+        "kind": _adapter_kind(adapter),
     }
     if sort_by == "ipv4" and ipv4 is not None:
         return _ip_or_text_sort_key(ipv4.address)
@@ -621,6 +686,22 @@ def suggest_loopback_value(backend_name: str, adapters: list[AdapterInfo]) -> st
     index = 0
     while True:
         candidate = f"py-loopback{index}"
+        if candidate.lower() not in used_names:
+            return candidate
+        index += 1
+
+
+def suggest_virtual_adapter_value(backend_name: str, adapters: list[AdapterInfo]) -> str:
+    used_names = {adapter.name.strip().lower() for adapter in adapters}
+    if backend_name in {"macOS", "POSIX"}:
+        for index in range(0, 256):
+            candidate = f"bridge{index}"
+            if candidate.lower() not in used_names:
+                return candidate
+        return "bridge256"
+    index = 0
+    while True:
+        candidate = f"py-virtual{index}"
         if candidate.lower() not in used_names:
             return candidate
         index += 1
@@ -703,6 +784,14 @@ def _format_address(address: AddressInfo) -> str:
     if address.prefix_length is None:
         return address.address
     return f"{address.address}/{address.prefix_length}"
+
+
+def _adapter_kind(adapter: AdapterInfo) -> str:
+    if adapter.is_loopback:
+        return "Loopback"
+    if adapter.is_virtual:
+        return f"Virtual ({adapter.virtual_kind})" if adapter.virtual_kind else "Virtual"
+    return "Physical"
 
 
 def _future_result_or(future, fallback):

@@ -39,7 +39,7 @@ from PyQt6.QtWidgets import (
 
 from .api import NetworkManager, adapter_sort_key, nat_sort_key, route_sort_key
 from .backends import BackendError
-from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo, VirtualAdapterInfo
 from .validation import validate_ip, validate_prefix
 
 
@@ -181,10 +181,12 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapters: list[AdapterInfo] = []
         self.routes: list[RouteInfo] = []
         self.nat_rules: list[NatRule] = []
+        self.virtual_adapters: list[VirtualAdapterInfo] = []
         self.global_forwarding_enabled: bool | None = None
         self.imported_snapshot: NetworkSnapshot | None = None
         self._admin_only_widgets: list[QWidget] = []
         self._last_suggested_loopback_value = _default_loopback_value(self.manager.backend_name)
+        self._last_suggested_virtual_value = _default_virtual_adapter_value(self.manager.backend_name)
         self._busy_depth = 0
         self._thread_pool = QThreadPool.globalInstance()
         self._workers: set[Worker] = set()
@@ -328,6 +330,26 @@ class NetworkManagerQtWindow(QMainWindow):
         self._admin_only_widgets.extend([self.create_loopback_button, self.delete_loopback_button])
         panel_layout.addWidget(self.create_loopback_button)
         panel_layout.addWidget(self.delete_loopback_button)
+
+        panel_layout.addSpacing(4)
+        panel_layout.addWidget(self._separator())
+        panel_layout.addWidget(self._section_label("Virtual NIC"))
+
+        virtual_form = QFormLayout()
+        virtual_form.setHorizontalSpacing(10)
+        self.virtual_name_edit = self._line_edit(self._last_suggested_virtual_value, admin_required=True)
+        self.virtual_address_edit = self._line_edit("192.168.56.1/24", admin_required=True)
+        virtual_form.addRow("Name", self.virtual_name_edit)
+        virtual_form.addRow("IPv4 CIDR", self.virtual_address_edit)
+        panel_layout.addLayout(virtual_form)
+
+        self.create_virtual_button = QPushButton("Create Virtual NIC")
+        self.create_virtual_button.clicked.connect(self.create_virtual_adapter)
+        self.delete_virtual_button = QPushButton("Delete Selected Virtual NIC")
+        self.delete_virtual_button.clicked.connect(self.delete_selected_virtual_adapter)
+        self._admin_only_widgets.extend([self.create_virtual_button, self.delete_virtual_button])
+        panel_layout.addWidget(self.create_virtual_button)
+        panel_layout.addWidget(self.delete_virtual_button)
         panel_layout.addStretch(1)
 
         splitter.addWidget(self._scroll_panel(panel))
@@ -584,14 +606,17 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapters = state.adapters
         self.routes = state.routes
         self.nat_rules = state.nat_rules
+        self.virtual_adapters = state.virtual_adapters
         self.global_forwarding_enabled = state.global_forwarding_enabled
         self._refresh_global_forwarding_controls()
         self._refresh_loopback_suggestion()
+        self._refresh_virtual_suggestion()
         self._populate_adapters()
         self._populate_routes()
         self._populate_nat_rules()
         self.statusBar().showMessage(
-            f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, and {len(self.nat_rules)} NAT rules."
+            f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, "
+            f"{len(self.nat_rules)} NAT rules, and {len(self.virtual_adapters)} virtual NICs."
         )
         self._log(f"Refreshed state from the {self.manager.backend_name} backend.")
 
@@ -615,7 +640,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 adapter.mac,
                 ", ".join(adapter.gateways),
                 ", ".join(adapter.dns_servers),
-                "Loopback" if adapter.is_loopback else "Physical",
+                _adapter_kind(adapter),
             ]
             sort_columns = ["name", "index", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind"]
             for column, value in enumerate(values):
@@ -733,6 +758,10 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_forwarding_check.setChecked(True if adapter.forwarding_enabled is None else adapter.forwarding_enabled)
         if adapter.is_loopback and not self.loopback_name_edit.text().strip():
             self.loopback_name_edit.setText(adapter.name)
+        if adapter.is_virtual:
+            self.virtual_name_edit.setText(adapter.name)
+            if ipv4:
+                self.virtual_address_edit.setText(_format_address(ipv4))
 
     def _on_route_select(self) -> None:
         route = self._selected_route()
@@ -812,6 +841,33 @@ class NetworkManagerQtWindow(QMainWindow):
             plan = self.manager.plan_delete_loopback(adapter)
         except (BackendError, LookupError, ValueError) as exc:
             self._error("Loopback Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def create_virtual_adapter(self) -> None:
+        name = self.virtual_name_edit.text().strip()
+        if not name:
+            self._info("Virtual NIC Name Required", "Enter a virtual NIC name.")
+            return
+        try:
+            plan = self.manager.plan_create_virtual_adapter(
+                name,
+                address=_address_from_text(self.virtual_address_edit.text().strip() or "192.168.56.1/24"),
+            )
+        except (BackendError, ValueError) as exc:
+            self._error("Virtual NIC Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def delete_selected_virtual_adapter(self) -> None:
+        adapter = self._selected_virtual_adapter()
+        if adapter is None:
+            self._info("No Virtual NIC Selected", "Select a virtual NIC first.")
+            return
+        try:
+            plan = self.manager.backend.plan_virtual_adapter_delete(adapter)
+        except BackendError as exc:
+            self._error("Virtual NIC Error", str(exc))
             return
         self._confirm_and_run(plan)
 
@@ -984,6 +1040,7 @@ class NetworkManagerQtWindow(QMainWindow):
             adapters=self.adapters or self.manager.list_adapters(),
             routes=self.routes or self.manager.list_routes(),
             nat_rules=self.nat_rules or self.manager.list_nat_rules(),
+            virtual_adapters=self.virtual_adapters or self.manager.list_virtual_adapters(),
             global_forwarding_enabled=(
                 self.global_forwarding_enabled
                 if self.global_forwarding_enabled is not None
@@ -1153,6 +1210,27 @@ class NetworkManagerQtWindow(QMainWindow):
         except (IndexError, ValueError):
             return None
 
+    def _selected_virtual_adapter(self) -> VirtualAdapterInfo | None:
+        selected_adapter = self._selected_adapter()
+        if selected_adapter is None:
+            return None
+        selected_name = selected_adapter.name.lower()
+        for adapter in self.virtual_adapters:
+            if adapter.name.lower() == selected_name or adapter.backend_id.lower() == selected_adapter.id.lower():
+                return adapter
+        if selected_adapter.is_virtual:
+            ipv4 = _first_ipv4(selected_adapter)
+            address = _format_address(ipv4)
+            return VirtualAdapterInfo(
+                name=selected_adapter.name,
+                kind=selected_adapter.virtual_kind or "virtual",
+                status=selected_adapter.status,
+                address=address,
+                source_cidr=_source_cidr_from_text(address),
+                backend_id=selected_adapter.id,
+            )
+        return None
+
     def _refresh_loopback_suggestion(self) -> None:
         current = self.loopback_name_edit.text().strip()
         if current and current != self._last_suggested_loopback_value:
@@ -1160,6 +1238,14 @@ class NetworkManagerQtWindow(QMainWindow):
         suggestion = self.manager.suggest_loopback_value(self.adapters)
         self._last_suggested_loopback_value = suggestion
         self.loopback_name_edit.setText(suggestion)
+
+    def _refresh_virtual_suggestion(self) -> None:
+        current = self.virtual_name_edit.text().strip()
+        if current and current != self._last_suggested_virtual_value:
+            return
+        suggestion = self.manager.suggest_virtual_adapter_value(self.adapters)
+        self._last_suggested_virtual_value = suggestion
+        self.virtual_name_edit.setText(suggestion)
 
     def _refresh_global_forwarding_controls(self) -> None:
         self.global_forwarding_label.setText(
@@ -1202,6 +1288,18 @@ def _address_from_fields(ip_value: str, prefix_value: str) -> AddressInfo | None
     return AddressInfo(address=validate_ip(address), prefix_length=validate_prefix(prefix_text), family="ipv4")
 
 
+def _address_from_text(value: str) -> AddressInfo | None:
+    text = value.strip()
+    if not text:
+        return None
+    if "/" in text:
+        import ipaddress
+
+        interface = ipaddress.ip_interface(text)
+        return AddressInfo(str(interface.ip), int(interface.network.prefixlen), f"ipv{interface.ip.version}")
+    return AddressInfo(address=validate_ip(text), prefix_length=24, family="ipv4")
+
+
 def _first_ipv4(adapter: AdapterInfo) -> AddressInfo | None:
     return next((item for item in adapter.addresses if item.family.lower() == "ipv4"), None)
 
@@ -1212,6 +1310,26 @@ def _format_address(address: AddressInfo | None) -> str:
     if address.prefix_length is None:
         return address.address
     return f"{address.address}/{address.prefix_length}"
+
+
+def _source_cidr_from_text(value: str) -> str:
+    text = value.strip()
+    if not text or "/" not in text:
+        return ""
+    try:
+        import ipaddress
+
+        return str(ipaddress.ip_interface(text).network)
+    except ValueError:
+        return ""
+
+
+def _adapter_kind(adapter: AdapterInfo) -> str:
+    if adapter.is_loopback:
+        return "Loopback"
+    if adapter.is_virtual:
+        return f"Virtual ({adapter.virtual_kind})" if adapter.virtual_kind else "Virtual"
+    return "Physical"
 
 
 def _format_forwarding(value: bool | None) -> str:
@@ -1243,6 +1361,12 @@ def _default_loopback_value(backend_name: str) -> str:
     if backend_name in {"macOS", "POSIX"}:
         return "127.0.0.2/32"
     return "py-loopback0"
+
+
+def _default_virtual_adapter_value(backend_name: str) -> str:
+    if backend_name in {"macOS", "POSIX"}:
+        return "bridge0"
+    return "py-virtual0"
 
 
 def format_elapsed_time(seconds: int | float) -> str:

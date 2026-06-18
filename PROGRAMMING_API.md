@@ -28,6 +28,9 @@ for route in manager.list_routes(sort_by="destination"):
 
 for rule in manager.list_nat_rules(sort_by="source_cidr"):
     print(rule.name, rule.source_cidr, rule.outbound_interface)
+
+for virtual in manager.list_virtual_adapters():
+    print(virtual.name, virtual.kind, virtual.address, virtual.source_cidr)
 ```
 
 Preview a change before running it:
@@ -59,6 +62,7 @@ Common data classes are also exported from `py_nic_manager`:
 - `AddressInfo`
 - `RouteInfo`
 - `NatRule`
+- `VirtualAdapterInfo`
 - `NetworkSnapshot`
 - `OperationPlan`
 - `CommandResult`
@@ -92,12 +96,14 @@ Viewing and lookup:
 - `list_adapters(sort_by=None, descending=False)`
 - `list_routes(sort_by=None, descending=False)`
 - `list_nat_rules(sort_by=None, descending=False)`
+- `list_virtual_adapters()`
 - `get_global_forwarding_enabled()`
 - `get_snapshot(concurrent=True)`
 - `find_adapter(adapter)`
 - `find_route(route, gateway="", interface="")`
 - `find_nat_rule(rule)`
 - `suggest_loopback_value(adapters=None)`
+- `suggest_virtual_adapter_value(adapters=None)`
 
 Snapshots:
 
@@ -123,6 +129,14 @@ Loopbacks:
 - `update_loopback(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False, require_admin=True)`
 - `plan_delete_loopback(adapter)`
 - `delete_loopback(adapter, require_admin=True)`
+
+Virtual NICs:
+
+- `plan_create_virtual_adapter(name=None, address=None, prefix_length=None)`
+- `create_virtual_adapter(name=None, address=None, prefix_length=None, require_admin=True)`
+- `find_virtual_adapter(adapter)`
+- `plan_delete_virtual_adapter(adapter)`
+- `delete_virtual_adapter(adapter, require_admin=True)`
 
 Routes:
 
@@ -157,12 +171,15 @@ Every GUI operation has a headless equivalent:
 | Refresh/view adapters | `list_adapters()`, `get_snapshot()` |
 | Refresh/view routes | `list_routes()`, `get_snapshot()` |
 | Refresh/view NAT rules | `list_nat_rules()`, `get_snapshot()` |
+| Refresh/view virtual NICs | `list_virtual_adapters()`, `get_snapshot()` |
 | View global IPv4 forwarding | `get_global_forwarding_enabled()`, `get_snapshot()` |
 | Sort adapter, route, and NAT tables | `list_adapters(sort_by=...)`, `list_routes(sort_by=...)`, `list_nat_rules(sort_by=...)` |
 | Edit adapter IP, MAC, gateway, DNS, DHCP | `plan_update_adapter()`, `update_adapter()` |
 | Edit loopback configuration | `plan_update_loopback()`, `update_loopback()` |
 | Create loopback | `plan_create_loopback()`, `create_loopback()` |
 | Delete loopback | `plan_delete_loopback()`, `delete_loopback()` |
+| Create virtual NIC | `plan_create_virtual_adapter()`, `create_virtual_adapter()` |
+| Delete virtual NIC | `plan_delete_virtual_adapter()`, `delete_virtual_adapter()` |
 | Set per-adapter IPv4 forwarding | `plan_set_adapter_forwarding()`, `set_adapter_forwarding()` |
 | Set global IPv4 forwarding | `plan_set_global_forwarding()`, `set_global_forwarding()` |
 | Restart after a restart-required plan | `plan_restart_system()`, `restart_system()` |
@@ -371,6 +388,56 @@ The exact backend behavior matches the GUI:
 - Linux creates dummy interfaces.
 - macOS and generic POSIX create aliases on `lo0`.
 
+## Virtual NIC Operations
+
+Get a non-conflicting recommended virtual NIC name:
+
+```python
+name = manager.suggest_virtual_adapter_value()
+```
+
+Preview or create a non-loopback virtual NIC:
+
+```python
+plan = manager.plan_create_virtual_adapter(
+    "py-virtual0",
+    address="192.168.56.1/24",
+)
+print(plan.as_text())
+results = manager.create_virtual_adapter(
+    "py-virtual0",
+    address="192.168.56.1/24",
+)
+```
+
+List virtual NICs and use their source CIDR for NAT:
+
+```python
+for adapter in manager.list_virtual_adapters():
+    print(adapter.name, adapter.kind, adapter.address, adapter.source_cidr)
+```
+
+Delete a managed virtual NIC:
+
+```python
+manager.delete_virtual_adapter("py-virtual0")
+```
+
+Platform behavior matches the GUI:
+
+- Windows uses the bundled Wintun DLLs and a startup task. Wintun is a
+  non-loopback, non-Hyper-V layer-3 virtual NIC. Py NIC Manager bundles the
+  official Wintun 0.14.1 DLLs for amd64, x86, arm, and arm64 plus the Wintun
+  prebuilt-binaries license.
+- Linux creates a `veth` pair and assigns the requested IPv4 CIDR to the
+  primary side. Attach the peer side to a namespace, container, bridge, or test
+  stack as needed.
+- macOS creates a bridge interface with `ifconfig <bridgeN> create` and assigns
+  the requested IPv4 CIDR. Existing `utun`, `tun`, `tap`, and bridge interfaces
+  are also listed.
+- Generic POSIX attempts portable bridge creation with `ifconfig`; unsupported
+  systems fail clearly.
+
 ## Route Operations
 
 Add a route:
@@ -455,6 +522,11 @@ selects the public/shared interface. Windows ICS supports one public shared
 interface at a time, so an ICS-backed rule may replace another ICS sharing setup.
 Windows ICS also requires a real private network adapter; it cannot use a
 loopback adapter as the shared/private side.
+
+For Windows NAT, a Wintun virtual NIC created with
+`create_virtual_adapter("py-virtual0", address="192.168.56.1/24")` exposes
+`192.168.56.0/24` as the internal source CIDR. Use that CIDR when creating the
+NAT rule.
 
 Delete a NAT rule:
 

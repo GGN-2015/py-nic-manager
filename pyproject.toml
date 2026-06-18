@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-nic-manager"
-version = "0.1.29"
+version = "0.1.30"
 description = "A cross-platform GUI network adapter and route manager."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,7 +16,7 @@ dependencies = [
   "is-admin-user>=0.1.0",
   "PyQt6>=6.6; sys_platform == 'win32'"
 ]
-keywords = ["network", "gui", "nic", "route", "loopback"]
+keywords = ["network", "gui", "nic", "route", "loopback", "virtual-adapter", "wintun"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Win32 (MS Windows)",
@@ -38,7 +38,16 @@ py-nic-manager = "py_nic_manager.__main__:main"
 include = ["py_nic_manager*"]
 
 [tool.setuptools.package-data]
-py_nic_manager = ["assets/fonts/*.ttf", "assets/fonts/*.txt"]
+py_nic_manager = [
+  "assets/fonts/*.ttf",
+  "assets/fonts/*.txt",
+  "assets/wintun/*.txt",
+  "assets/wintun/*.md",
+  "assets/wintun/amd64/*.dll",
+  "assets/wintun/x86/*.dll",
+  "assets/wintun/arm/*.dll",
+  "assets/wintun/arm64/*.dll",
+]
 
 [dependency-groups]
 dev = [

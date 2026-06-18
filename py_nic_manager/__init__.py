@@ -2,7 +2,16 @@
 
 from .api import NetworkManager, PrivilegeError
 from .backends import BackendError
-from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import (
+    AdapterInfo,
+    AddressInfo,
+    CommandResult,
+    NatRule,
+    NetworkSnapshot,
+    OperationPlan,
+    RouteInfo,
+    VirtualAdapterInfo,
+)
 
 __all__ = [
     "AdapterInfo",
@@ -15,7 +24,8 @@ __all__ = [
     "OperationPlan",
     "PrivilegeError",
     "RouteInfo",
+    "VirtualAdapterInfo",
     "__version__",
 ]
 
-__version__ = "0.1.29"
+__version__ = "0.1.30"

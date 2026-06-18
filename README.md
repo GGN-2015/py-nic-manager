@@ -19,7 +19,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 
 ## Features
 
-- View network adapters, IPv4 addresses, MAC addresses, gateways, DNS servers,
+- View network adapters, non-loopback virtual NICs, IPv4 addresses, MAC
+  addresses, gateways, DNS servers,
   DHCP state, global and per-adapter IPv4 router-forwarding state, and
   loopback status.
 - Edit existing adapter IPv4 address, prefix length, gateway, DNS servers, MAC
@@ -29,6 +30,10 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
     `netloop.inf` driver and Windows SetupAPI.
   - Linux: dummy interfaces through `ip link`.
   - macOS and generic POSIX: loopback aliases on `lo0`.
+- Create and delete NAT-capable non-loopback virtual NICs from the adapter page:
+  - Windows: bundled Wintun DLLs for amd64, x86, arm, and arm64.
+  - Linux: `veth` pairs through `ip link`.
+  - macOS and generic POSIX: bridge interfaces through `ifconfig`.
 - View, add, update, and delete IPv4 routes through a visual route table editor.
 - View, add, update, and delete persistent IPv4 NAT rules. Supported NAT rules
   masquerade traffic from a source CIDR when it leaves through the selected
@@ -36,13 +41,13 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 - Enable or disable global IPv4 router forwarding on supported systems.
 - Enable or disable IPv4 router forwarding for a selected adapter where the
   operating system backend supports per-interface forwarding.
-- Export the current adapters, routes, NAT rules, and global forwarding state
-  to a JSON configuration snapshot.
+- Export the current adapters, virtual NICs, routes, NAT rules, and global
+  forwarding state to a JSON configuration snapshot.
 - Import a saved snapshot and apply it as a best-effort one-click restore after
   previewing the system commands that will run.
 - Preview every mutating command before execution.
 - Use the headless Python programming API for the same adapter, loopback, route,
-  forwarding, and snapshot operations exposed by the GUI.
+  forwarding, virtual NIC, and snapshot operations exposed by the GUI.
 
 ## Installation
 
@@ -127,6 +132,17 @@ Creating a Microsoft KM-TEST Loopback Adapter uses the built-in
 `%WINDIR%\inf\netloop.inf` driver directly. It does not require `devcon.exe` or
 the Windows Driver Kit.
 
+Non-loopback virtual NIC creation uses Wintun. Py NIC Manager bundles the
+official platform-specific `wintun.dll` files from Wintun 0.14.1 under
+`py_nic_manager/assets/wintun/` so users do not need to install the Windows
+Driver Kit, Hyper-V, or WinNAT. The bundled Wintun binaries keep their own
+WireGuard LLC prebuilt-binaries license in
+`py_nic_manager/assets/wintun/LICENSE.txt`; they are not relicensed as MIT.
+The helper creates a Wintun adapter, configures the requested IPv4 CIDR, starts
+a background keeper process that holds the adapter handle, and registers a
+startup task so the virtual NIC and its address are restored after reboot.
+Use the virtual NIC's source CIDR as the NAT internal network.
+
 Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
 `Set-NetIPInterface -Forwarding`.
 
@@ -155,6 +171,12 @@ same-link gateways with `Nexthop has invalid gateway`.
 
 Loopback-style adapters are implemented as Linux dummy interfaces.
 
+Non-loopback virtual NIC creation uses a `veth` pair. The primary side receives
+the requested IPv4 CIDR and is intended to be the NAT internal interface; the
+peer side is brought up so users can attach it to a namespace, container,
+bridge, or test stack. The runtime interface is created immediately. Persist it
+with your distribution's network manager if it must survive reboot.
+
 Per-adapter IPv4 router forwarding uses
 `net.ipv4.conf.<interface>.forwarding`.
 
@@ -174,6 +196,12 @@ Loopback creation is implemented as an address alias on `lo0`, because macOS
 does not create independent loopback NICs in the same way Linux creates dummy
 interfaces.
 
+Non-loopback virtual NIC creation uses `ifconfig <bridgeN> create` and assigns
+the requested IPv4 CIDR to that bridge. Existing `utun`, `tun`, `tap`, and
+bridge interfaces created by VPN/Network Extension providers are also shown in
+the virtual NIC list when present. These interfaces can be used as the internal
+side/source network for `pf` NAT rules.
+
 macOS has a global IPv4 forwarding switch rather than the same per-interface
 switch exposed by Windows and Linux. Py NIC Manager enables global forwarding
 when needed and uses a `pf` anchor to block forwarded IPv4 packets received on
@@ -190,6 +218,8 @@ For POSIX systems that are not Linux or macOS, the app uses a conservative
 `ifconfig`/`route` fallback. Viewing should work on many Unix-like systems, but
 some mutating operations are intentionally limited because network management
 varies widely across BSDs and commercial Unix systems.
+Virtual NIC creation attempts portable `ifconfig <bridgeN> create` bridge
+creation; unsupported systems fail clearly during the command preview/run.
 
 ## Configuration Snapshots
 
@@ -202,6 +232,7 @@ Exported files are JSON documents with this high-level shape:
   "captured_at": "2026-06-17T02:00:00+00:00",
   "global_forwarding_enabled": false,
   "adapters": [],
+  "virtual_adapters": [],
   "routes": [],
   "nat_rules": []
 }
@@ -211,11 +242,12 @@ When applying an imported snapshot, Py NIC Manager:
 
 1. Matches adapters by backend ID first, then by adapter name.
 2. Restores the saved global IPv4 forwarding state when the backend supports it.
-3. Updates matched adapters with the saved IPv4, gateway, DNS, MAC, and DHCP
+3. Recreates saved managed virtual NICs when the backend supports them.
+4. Updates matched adapters with the saved IPv4, gateway, DNS, MAC, and DHCP
    values where supported.
-4. Adds saved IPv4 routes.
-5. Restores Py NIC Manager managed persistent NAT rules.
-6. Shows skipped adapters and platform limitations in the command preview.
+5. Adds saved IPv4 routes.
+6. Restores Py NIC Manager managed persistent NAT rules.
+7. Shows skipped adapters and platform limitations in the command preview.
 
 Applying a snapshot from another operating system is allowed only after a
 warning and is best-effort.

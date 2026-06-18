@@ -81,6 +81,8 @@ class AdapterInfo:
     dns_servers: list[str] = field(default_factory=list)
     dhcp_enabled: bool | None = None
     is_loopback: bool = False
+    is_virtual: bool = False
+    virtual_kind: str = ""
     forwarding_enabled: bool | None = None
 
     @classmethod
@@ -100,6 +102,8 @@ class AdapterInfo:
             dns_servers=[str(item) for item in data.get("dns_servers", [])],
             dhcp_enabled=_optional_bool(data.get("dhcp_enabled")),
             is_loopback=bool(data.get("is_loopback", False)),
+            is_virtual=bool(data.get("is_virtual", False)),
+            virtual_kind=str(data.get("virtual_kind", "")),
             forwarding_enabled=_optional_bool(data.get("forwarding_enabled")),
         )
 
@@ -115,7 +119,49 @@ class AdapterInfo:
             "dns_servers": self.dns_servers,
             "dhcp_enabled": self.dhcp_enabled,
             "is_loopback": self.is_loopback,
+            "is_virtual": self.is_virtual,
+            "virtual_kind": self.virtual_kind,
             "forwarding_enabled": self.forwarding_enabled,
+        }
+
+
+@dataclass(slots=True)
+class VirtualAdapterInfo:
+    name: str
+    kind: str
+    status: str = ""
+    address: str = ""
+    source_cidr: str = ""
+    nat_capable: bool = True
+    persistent: bool = True
+    managed: bool = True
+    backend_id: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VirtualAdapterInfo":
+        return cls(
+            name=str(data.get("name", "")),
+            kind=str(data.get("kind", "")),
+            status=str(data.get("status", "")),
+            address=str(data.get("address", "")),
+            source_cidr=str(data.get("source_cidr", "")),
+            nat_capable=bool(_optional_bool(data.get("nat_capable")) if data.get("nat_capable") is not None else True),
+            persistent=bool(_optional_bool(data.get("persistent")) if data.get("persistent") is not None else True),
+            managed=bool(_optional_bool(data.get("managed")) if data.get("managed") is not None else True),
+            backend_id=str(data.get("backend_id", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "status": self.status,
+            "address": self.address,
+            "source_cidr": self.source_cidr,
+            "nat_capable": self.nat_capable,
+            "persistent": self.persistent,
+            "managed": self.managed,
+            "backend_id": self.backend_id,
         }
 
 
@@ -200,6 +246,7 @@ class NetworkSnapshot:
     routes: list[RouteInfo]
     nat_rules: list[NatRule] = field(default_factory=list)
     global_forwarding_enabled: bool | None = None
+    virtual_adapters: list[VirtualAdapterInfo] = field(default_factory=list)
     captured_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc)
         .replace(microsecond=0)
@@ -228,6 +275,11 @@ class NetworkSnapshot:
                 for item in data.get("nat_rules", [])
                 if isinstance(item, dict)
             ],
+            virtual_adapters=[
+                VirtualAdapterInfo.from_dict(item)
+                for item in data.get("virtual_adapters", [])
+                if isinstance(item, dict)
+            ],
             global_forwarding_enabled=_optional_bool(data.get("global_forwarding_enabled")),
         )
 
@@ -238,6 +290,7 @@ class NetworkSnapshot:
             "captured_at": self.captured_at,
             "global_forwarding_enabled": self.global_forwarding_enabled,
             "adapters": [item.to_dict() for item in self.adapters],
+            "virtual_adapters": [item.to_dict() for item in self.virtual_adapters],
             "routes": [item.to_dict() for item in self.routes],
             "nat_rules": [item.to_dict() for item in self.nat_rules],
         }

@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import subprocess
+from pathlib import Path
 import pytest
 
 from py_nic_manager.backends import (
@@ -19,7 +20,16 @@ from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as ap
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
-from py_nic_manager.models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from py_nic_manager.models import (
+    AdapterInfo,
+    AddressInfo,
+    CommandResult,
+    NatRule,
+    NetworkSnapshot,
+    OperationPlan,
+    RouteInfo,
+    VirtualAdapterInfo,
+)
 from py_nic_manager.tk_fonts import BUNDLED_FONT_FAMILY, bundled_font_paths
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
@@ -86,6 +96,7 @@ def test_snapshot_round_trip(tmp_path) -> None:
         ],
         routes=[RouteInfo("0.0.0.0/0", "192.0.2.1", "eth0", 10)],
         nat_rules=[NatRule("nat0", "192.168.0.0/24", "eth0")],
+        virtual_adapters=[VirtualAdapterInfo("py-virtual0", "veth", address="192.168.56.1/24")],
         global_forwarding_enabled=True,
     )
     path.write_text(json.dumps(snapshot.to_dict()), encoding="utf-8")
@@ -98,6 +109,7 @@ def test_snapshot_round_trip(tmp_path) -> None:
     assert loaded.routes[0].interface_metric is None
     assert loaded.routes[0].effective_metric is None
     assert loaded.nat_rules[0].source_cidr == "192.168.0.0/24"
+    assert loaded.virtual_adapters[0].name == "py-virtual0"
     assert loaded.global_forwarding_enabled is True
 
 
@@ -143,6 +155,10 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
             time.sleep(0.2)
             return ["nat"]
 
+        def list_virtual_adapters(self):
+            time.sleep(0.2)
+            return ["virtual"]
+
         def get_global_forwarding_enabled(self):
             time.sleep(0.2)
             return True
@@ -152,12 +168,13 @@ def test_network_state_loader_fetches_adapters_and_routes_concurrently() -> None
         _load_network_state = NetworkManagerApp._load_network_state
 
     started_at = time.perf_counter()
-    adapters, routes, nat_rules, global_forwarding = Loader()._load_network_state()
+    adapters, routes, nat_rules, virtual_adapters, global_forwarding = Loader()._load_network_state()
     elapsed = time.perf_counter() - started_at
 
     assert adapters == ["adapter"]
     assert routes == ["route"]
     assert nat_rules == ["nat"]
+    assert virtual_adapters == ["virtual"]
     assert global_forwarding is True
     assert elapsed < 0.35
 
@@ -173,6 +190,9 @@ def test_network_state_loader_tolerates_optional_state_failures() -> None:
         def list_nat_rules(self):
             raise RuntimeError("NAT is unavailable.")
 
+        def list_virtual_adapters(self):
+            raise RuntimeError("Virtual adapter state is unavailable.")
+
         def get_global_forwarding_enabled(self):
             raise RuntimeError("Forwarding state is unavailable.")
 
@@ -181,14 +201,16 @@ def test_network_state_loader_tolerates_optional_state_failures() -> None:
         _load_network_state = NetworkManagerApp._load_network_state
 
     loader = Loader()
-    adapters, routes, nat_rules, global_forwarding = loader._load_network_state()
+    adapters, routes, nat_rules, virtual_adapters, global_forwarding = loader._load_network_state()
 
     assert adapters == ["adapter"]
     assert routes == ["route"]
     assert nat_rules == []
+    assert virtual_adapters == []
     assert global_forwarding is None
     assert loader._optional_load_errors == [
         "NAT rules unavailable: NAT is unavailable.",
+        "Virtual adapters unavailable: Virtual adapter state is unavailable.",
         "Global forwarding state unavailable: Forwarding state is unavailable.",
     ]
 
@@ -247,6 +269,17 @@ def test_bundled_tk_font_assets_are_present() -> None:
     assert names == {"JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"}
     assert all(path.exists() and path.stat().st_size > 100_000 for path in paths)
     assert (paths[0].parent / "JetBrainsMono-OFL.txt").exists()
+
+
+def test_bundled_wintun_assets_are_present() -> None:
+    root = Path(__file__).resolve().parents[1] / "py_nic_manager" / "assets" / "wintun"
+
+    assert (root / "LICENSE.txt").exists()
+    assert (root / "README.md").exists()
+    for arch in ("amd64", "x86", "arm", "arm64"):
+        dll = root / arch / "wintun.dll"
+        assert dll.exists()
+        assert dll.stat().st_size > 100_000
 
 
 def test_qt_runtime_probe_handles_crashes(monkeypatch) -> None:
@@ -520,6 +553,40 @@ def test_linux_nat_plan_uses_persistent_helper_without_restart() -> None:
     assert "--outbound-interface" in plan.commands[0]
 
 
+def test_windows_virtual_adapter_plan_uses_bundled_wintun_helper() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    plan = backend.plan_virtual_adapter_create("py-virtual0", AddressInfo("192.168.56.1", 24))
+    delete_plan = backend.plan_virtual_adapter_delete(VirtualAdapterInfo("py-virtual0", "wintun"))
+
+    assert plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_wintun", "create"]
+    assert "--name" in plan.commands[0]
+    assert "py-virtual0" in plan.commands[0]
+    assert "--address" in plan.commands[0]
+    assert "192.168.56.1/24" in plan.commands[0]
+    assert "wintun.dll" in " ".join(plan.notes)
+    assert delete_plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_wintun", "delete"]
+
+
+def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:
+    backend = LinuxBackend(dry_run=True)
+
+    plan = backend.plan_virtual_adapter_create("py-virtual0", AddressInfo("192.168.56.1", 24))
+
+    assert ["ip", "link", "add", "py-virtual0", "type", "veth", "peer", "name", "py-virtual-peer"] in plan.commands
+    assert ["ip", "addr", "add", "192.168.56.1/24", "dev", "py-virtual0"] in plan.commands
+    assert plan.title == "Create virtual adapter"
+
+
+def test_macos_virtual_adapter_plan_creates_bridge() -> None:
+    backend = MacOSBackend(dry_run=True)
+
+    plan = backend.plan_virtual_adapter_create("bridge9", AddressInfo("192.168.56.1", 24))
+
+    assert ["ifconfig", "bridge9", "create"] in plan.commands
+    assert ["ifconfig", "bridge9", "inet", "192.168.56.1/24", "up"] in plan.commands
+
+
 def test_iptables_nat_parser_marks_managed_and_external_rules() -> None:
     rules = _parse_iptables_nat_rules(
         '-A POSTROUTING -s 192.168.0.0/24 -o eth0 -m comment --comment "py-nic-manager-nat:nat0" -j MASQUERADE\n'
@@ -641,6 +708,8 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     create_loopback_plan = manager.plan_create_loopback()
     delete_loopback_plan = manager.plan_delete_loopback("py-loopback0")
     update_loopback_plan = manager.plan_update_loopback("py-loopback0", address="192.0.2.60/24")
+    create_virtual_plan = manager.plan_create_virtual_adapter("py-virtual1", address="192.168.56.1/24")
+    delete_virtual_plan = manager.plan_delete_virtual_adapter("py-virtual0")
     add_route_plan = manager.plan_add_route(
         "203.0.113.0/24",
         gateway="192.0.2.1",
@@ -676,6 +745,8 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     assert "py-loopback1" in create_loopback_plan.commands[0]
     assert delete_loopback_plan.title == "Delete loopback adapter"
     assert update_loopback_plan.commands
+    assert create_virtual_plan.title == "Create virtual adapter"
+    assert delete_virtual_plan.title == "Delete virtual adapter"
     assert add_route_plan.title == "Add route"
     assert update_route_plan.title == "Update route"
     assert delete_route_plan.title == "Delete route"
@@ -767,6 +838,16 @@ class _FakeWindowsBackend(WindowsBackend):
                 is_loopback=True,
                 forwarding_enabled=False,
             ),
+            AdapterInfo(
+                id="virtual-id",
+                name="py-virtual0",
+                description="Wintun Userspace Tunnel",
+                status="Up",
+                addresses=[AddressInfo("192.168.56.1", 24)],
+                is_virtual=True,
+                virtual_kind="wintun",
+                forwarding_enabled=True,
+            ),
         ]
 
     def list_routes(self):
@@ -777,3 +858,15 @@ class _FakeWindowsBackend(WindowsBackend):
 
     def list_nat_rules(self):
         return [NatRule("nat0", "192.168.0.0/24", "Ethernet")]
+
+    def list_virtual_adapters(self):
+        return [
+            VirtualAdapterInfo(
+                name="py-virtual0",
+                kind="wintun",
+                status="Up",
+                address="192.168.56.1/24",
+                source_cidr="192.168.56.0/24",
+                backend_id="virtual-id",
+            )
+        ]

@@ -13,7 +13,16 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import (
+    AdapterInfo,
+    AddressInfo,
+    CommandResult,
+    NatRule,
+    NetworkSnapshot,
+    OperationPlan,
+    RouteInfo,
+    VirtualAdapterInfo,
+)
 from .validation import netmask_to_prefix, normalize_mac, prefix_to_netmask
 
 
@@ -37,6 +46,10 @@ class BaseBackend(ABC):
 
     @abstractmethod
     def list_nat_rules(self) -> list[NatRule]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
         raise NotImplementedError
 
     @abstractmethod
@@ -69,6 +82,14 @@ class BaseBackend(ABC):
 
     @abstractmethod
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:
+        raise NotImplementedError
+
+    @abstractmethod
+    def plan_virtual_adapter_create(self, name: str, address: AddressInfo | None) -> OperationPlan:
+        raise NotImplementedError
+
+    @abstractmethod
+    def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
         raise NotImplementedError
 
     @abstractmethod
@@ -107,15 +128,18 @@ class BaseBackend(ABC):
             adapters=self.list_adapters(),
             routes=self.list_routes(),
             nat_rules=self.list_nat_rules(),
+            virtual_adapters=self.list_virtual_adapters(),
             global_forwarding_enabled=self.get_global_forwarding_enabled(),
         )
 
     def plan_snapshot_apply(self, snapshot: NetworkSnapshot) -> OperationPlan:
         current_adapters = self.list_adapters()
+        current_virtual_adapters = self.list_virtual_adapters()
         current_routes = [route for route in self.list_routes() if route.family.lower() == "ipv4"]
         current_nat_rules = [rule for rule in self.list_nat_rules() if rule.family.lower() == "ipv4" and rule.managed]
         adapters_by_id = {adapter.id: adapter for adapter in current_adapters}
         adapters_by_name = {adapter.name: adapter for adapter in current_adapters}
+        virtual_by_name = {adapter.name: adapter for adapter in current_virtual_adapters}
         commands: list[list[str]] = []
         notes: list[str] = []
         restart_required = False
@@ -151,6 +175,17 @@ class BaseBackend(ABC):
                 commands.extend(plan.commands)
                 notes.extend(plan.notes)
                 restart_required = restart_required or plan.restart_required
+
+        for saved in snapshot.virtual_adapters:
+            if not saved.managed:
+                continue
+            if saved.name in virtual_by_name:
+                continue
+            address = _address_from_cidr(saved.address)
+            plan = self.plan_virtual_adapter_create(saved.name, address)
+            commands.extend(plan.commands)
+            notes.extend(plan.notes)
+            restart_required = restart_required or plan.restart_required
 
         target_routes = [route for route in snapshot.routes if route.family.lower() == "ipv4"]
         target_route_keys = {_route_key(route) for route in target_routes}
@@ -294,6 +329,11 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
   $config = $configs[$index]
   $ipInterface = $ipInterfaces[$index]
   $dns = @($dnsServers[$index])
+  $isVirtual = [bool]($adapter.InterfaceDescription -match "Wintun|WireGuard|TAP|Virtual|VPN" -or $adapter.Name -like "py-virtual*")
+  $virtualKind = ""
+  if ($adapter.InterfaceDescription -match "Wintun|WireGuard") { $virtualKind = "wintun" }
+  elseif ($adapter.InterfaceDescription -match "TAP") { $virtualKind = "tap" }
+  elseif ($adapter.InterfaceDescription -match "Virtual|VPN") { $virtualKind = "virtual" }
   [pscustomobject]@{
     id = [string]$adapter.PnPDeviceID
     name = [string]$adapter.Name
@@ -303,6 +343,8 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     dhcp_enabled = [bool]($config.NetIPv4Interface.Dhcp -eq "Enabled")
     is_loopback = [bool]($adapter.InterfaceDescription -match "Loopback|KM-TEST|Npcap Loopback")
     forwarding_enabled = [bool]($ipInterface.Forwarding -eq "Enabled")
+    is_virtual = $isVirtual
+    virtual_kind = $virtualKind
     addresses = @($config.IPv4Address | ForEach-Object {
       [pscustomobject]@{
         address = [string]$_.IPAddress
@@ -318,6 +360,13 @@ $adapters | ConvertTo-Json -Depth 6
 """
         data = self.run_json(_powershell(script))
         return [AdapterInfo.from_dict(item) for item in _as_list(data)]
+
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
+        try:
+            data = self.run_json([sys.executable, "-m", "py_nic_manager.windows_wintun", "list"])
+        except BackendError:
+            return []
+        return [VirtualAdapterInfo.from_dict(item) for item in _as_list(data)]
 
     def list_routes(self) -> list[RouteInfo]:
         script = r"""
@@ -579,6 +628,36 @@ if ($device) {{
 }}
 """
         return OperationPlan("Delete loopback adapter", [_powershell(script)])
+
+    def plan_virtual_adapter_create(self, name: str, address: AddressInfo | None) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(name, default="py-virtual0")
+        cidr = _address_to_cidr(address, "192.168.56.1/24")
+        return OperationPlan(
+            "Create virtual adapter",
+            [[
+                sys.executable,
+                "-m",
+                "py_nic_manager.windows_wintun",
+                "create",
+                "--name",
+                clean_name,
+                "--address",
+                cidr,
+            ]],
+            [
+                "Windows creates a non-loopback Wintun virtual adapter using the wintun.dll bundled with Py NIC Manager.",
+                "The helper keeps the adapter alive with a background process and registers a startup task for persistence.",
+                "Use the virtual adapter's source CIDR as the NAT internal network.",
+            ],
+        )
+
+    def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(adapter.name)
+        return OperationPlan(
+            "Delete virtual adapter",
+            [[sys.executable, "-m", "py_nic_manager.windows_wintun", "delete", "--name", clean_name]],
+            ["The Wintun keeper process and startup task for this adapter will be removed."],
+        )
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         value = "Enabled" if enabled else "Disabled"
@@ -1155,10 +1234,43 @@ class LinuxBackend(BaseBackend):
                     dns_servers=dns_by_iface.get(name, []),
                     dhcp_enabled=None,
                     is_loopback=bool(item.get("link_type") in {"loopback", "dummy"} or name == "lo"),
+                    is_virtual=bool(item.get("link_type") in {"veth", "tun", "tap"} or name.startswith("py-virtual")),
+                    virtual_kind=str(item.get("link_type", "")) if item.get("link_type") in {"veth", "tun", "tap"} else "",
                     forwarding_enabled=self._forwarding_enabled(name),
                 )
             )
         return adapters
+
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
+        try:
+            data = self.run_json(["ip", "-j", "addr", "show"])
+        except BackendError:
+            return []
+        items: list[VirtualAdapterInfo] = []
+        for item in _as_list(data):
+            name = str(item.get("ifname", ""))
+            link_type = str(item.get("link_type", ""))
+            if link_type not in {"veth", "tun", "tap"} and not name.startswith("py-virtual"):
+                continue
+            address = ""
+            for info in item.get("addr_info", []):
+                if info.get("family") == "inet" and info.get("local"):
+                    address = f"{info.get('local')}/{info.get('prefixlen', 24)}"
+                    break
+            items.append(
+                VirtualAdapterInfo(
+                    name=name,
+                    kind=link_type or "virtual",
+                    status=str(item.get("operstate", "")),
+                    address=address,
+                    source_cidr=_source_cidr_from_address(address),
+                    nat_capable=True,
+                    persistent=False,
+                    managed=name.startswith("py-virtual"),
+                    backend_id=name,
+                )
+            )
+        return items
 
     def list_routes(self) -> list[RouteInfo]:
         data = self.run_json(["ip", "-j", "route", "show", "table", "all"])
@@ -1282,6 +1394,29 @@ class LinuxBackend(BaseBackend):
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:
         return OperationPlan("Delete loopback adapter", [["ip", "link", "delete", adapter.name]])
 
+    def plan_virtual_adapter_create(self, name: str, address: AddressInfo | None) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(name, default="py-virtual0")
+        peer_name = _linux_peer_name(clean_name)
+        cidr = _address_to_cidr(address, "192.168.56.1/24")
+        return OperationPlan(
+            "Create virtual adapter",
+            [
+                ["ip", "link", "add", clean_name, "type", "veth", "peer", "name", peer_name],
+                ["ip", "addr", "add", cidr, "dev", clean_name],
+                ["ip", "link", "set", "dev", clean_name, "up"],
+                ["ip", "link", "set", "dev", peer_name, "up"],
+            ],
+            [
+                "Linux creates a veth pair that can be used as a NAT internal network.",
+                f"The primary side is {clean_name}; the peer side is {peer_name}.",
+                "Persist this interface with your distribution's network manager if it must survive reboot.",
+            ],
+        )
+
+    def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(adapter.name)
+        return OperationPlan("Delete virtual adapter", [["ip", "link", "delete", clean_name]])
+
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         value = "1" if enabled else "0"
         return OperationPlan(
@@ -1394,6 +1529,8 @@ class MacOSBackend(BaseBackend):
                     dns_servers=self._dns_for_service(service),
                     dhcp_enabled=info["method"].lower() == "dhcp",
                     is_loopback=service.lower().startswith("loopback") or device.startswith("lo"),
+                    is_virtual=bool(device.startswith(("utun", "tun", "tap", "bridge", "gif", "stf"))),
+                    virtual_kind=_virtual_kind_from_name(device),
                     forwarding_enabled=_macos_adapter_forwarding_state(
                         device,
                         global_forwarding,
@@ -1402,7 +1539,17 @@ class MacOSBackend(BaseBackend):
                 )
             )
         adapters.extend(self._loopback_aliases())
+        known_devices = {adapter.description or adapter.id for adapter in adapters}
+        for virtual in self.list_virtual_adapters():
+            if virtual.name not in known_devices:
+                adapters.append(_virtual_to_adapter_info(virtual))
         return adapters
+
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
+        result = self.run(["ifconfig", "-a"])
+        if not result.ok:
+            return []
+        return _ifconfig_virtual_adapters(result.stdout)
 
     def list_routes(self) -> list[RouteInfo]:
         result = self.run(["netstat", "-rn", "-f", "inet"])
@@ -1508,6 +1655,31 @@ class MacOSBackend(BaseBackend):
         if address in {"127.0.0.1", "::1", "lo0"}:
             raise BackendError("The primary loopback address cannot be deleted.")
         return OperationPlan("Delete loopback alias", [["ifconfig", "lo0", "-alias", address]])
+
+    def plan_virtual_adapter_create(self, name: str, address: AddressInfo | None) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(name, default="bridge0")
+        cidr = _address_to_cidr(address, "192.168.56.1/24")
+        return OperationPlan(
+            "Create virtual adapter",
+            [
+                ["ifconfig", clean_name, "create"],
+                ["ifconfig", clean_name, "inet", cidr, "up"],
+            ],
+            [
+                "macOS creates a bridge interface as a non-loopback virtual NIC.",
+                "The bridge can be used as a pf NAT internal interface/source network.",
+                "Existing utun/tun/tap interfaces from VPN or Network Extension providers are also shown when present.",
+            ],
+        )
+
+    def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(adapter.name)
+        if not clean_name.startswith("bridge"):
+            raise BackendError(
+                "Only bridge interfaces created by Py NIC Manager can be deleted here. "
+                "Provider-owned utun/tun/tap interfaces must be removed by their owner."
+            )
+        return OperationPlan("Delete virtual adapter", [["ifconfig", clean_name, "destroy"]])
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         device = adapter.description or adapter.id
@@ -1624,6 +1796,14 @@ class GenericPosixBackend(BaseBackend):
         adapters.extend(_loopback_alias_adapters(result.stdout))
         return adapters
 
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
+        if not shutil.which("ifconfig"):
+            return []
+        result = self.run(["ifconfig", "-a"])
+        if not result.ok:
+            return []
+        return _ifconfig_virtual_adapters(result.stdout)
+
     def list_routes(self) -> list[RouteInfo]:
         if not shutil.which("netstat"):
             return []
@@ -1701,6 +1881,25 @@ class GenericPosixBackend(BaseBackend):
             raise BackendError("The primary loopback address cannot be deleted.")
         return OperationPlan("Delete loopback alias", [["ifconfig", "lo0", "-alias", address]])
 
+    def plan_virtual_adapter_create(self, name: str, address: AddressInfo | None) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(name, default="bridge0")
+        cidr = _address_to_cidr(address, "192.168.56.1/24")
+        return OperationPlan(
+            "Create virtual adapter",
+            [
+                ["ifconfig", clean_name, "create"],
+                ["ifconfig", clean_name, "inet", cidr, "up"],
+            ],
+            [
+                "Generic POSIX backends try to create a bridge interface with ifconfig.",
+                "If this system does not support ifconfig bridge creation, the command will fail clearly.",
+            ],
+        )
+
+    def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
+        clean_name = _validate_virtual_adapter_name(adapter.name)
+        return OperationPlan("Delete virtual adapter", [["ifconfig", clean_name, "destroy"]])
+
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         state = "enabled" if enabled else "disabled"
         return OperationPlan(
@@ -1747,6 +1946,9 @@ class UnsupportedBackend(BaseBackend):
     def list_nat_rules(self) -> list[NatRule]:
         return []
 
+    def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
+        return []
+
     def plan_adapter_update(
         self,
         adapter: AdapterInfo,
@@ -1771,6 +1973,12 @@ class UnsupportedBackend(BaseBackend):
         raise BackendError(f"{self.name} is not supported yet.")
 
     def plan_loopback_delete(self, adapter: AdapterInfo) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def plan_virtual_adapter_create(self, name: str, address: AddressInfo | None) -> OperationPlan:
+        raise BackendError(f"{self.name} is not supported yet.")
+
+    def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
         raise BackendError(f"{self.name} is not supported yet.")
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
@@ -1941,6 +2149,125 @@ def _dedupe_commands(commands: Iterable[list[str]]) -> list[list[str]]:
             seen.add(key)
             unique.append(command)
     return unique
+
+
+def _validate_virtual_adapter_name(name: str, default: str = "") -> str:
+    text = (name or default).strip()
+    if not text:
+        raise BackendError("A virtual adapter name is required.")
+    if any(character in text for character in "\r\n\t"):
+        raise BackendError("Virtual adapter names must be a single line.")
+    return text
+
+
+def _address_to_cidr(address: AddressInfo | None, default: str) -> str:
+    if address is None:
+        return default
+    if not address.address:
+        return default
+    return f"{address.address}/{address.prefix_length or 24}"
+
+
+def _address_from_cidr(value: str) -> AddressInfo | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        interface = ipaddress.ip_interface(text)
+    except ValueError as exc:
+        raise BackendError(f"Invalid virtual adapter address: {value}") from exc
+    return AddressInfo(str(interface.ip), int(interface.network.prefixlen), f"ipv{interface.ip.version}")
+
+
+def _source_cidr_from_address(value: str) -> str:
+    text = value.strip()
+    if not text or "/" not in text:
+        return ""
+    try:
+        return str(ipaddress.ip_interface(text).network)
+    except ValueError:
+        return ""
+
+
+def _linux_peer_name(name: str) -> str:
+    suffix = "-peer"
+    if len(name) + len(suffix) <= 15:
+        return f"{name}{suffix}"
+    return f"{name[:10]}-peer"
+
+
+def _virtual_kind_from_name(name: str) -> str:
+    lowered = name.lower()
+    for prefix in ("utun", "tun", "tap", "bridge", "gif", "stf", "veth"):
+        if lowered.startswith(prefix):
+            return prefix
+    return "virtual"
+
+
+def _virtual_to_adapter_info(virtual: VirtualAdapterInfo) -> AdapterInfo:
+    address = _address_from_cidr(virtual.address) if virtual.address else None
+    return AdapterInfo(
+        id=virtual.backend_id or virtual.name,
+        name=virtual.name,
+        description=virtual.kind,
+        status=virtual.status,
+        addresses=[address] if address else [],
+        is_loopback=False,
+        is_virtual=True,
+        virtual_kind=virtual.kind,
+    )
+
+
+def _ifconfig_virtual_adapters(output: str) -> list[VirtualAdapterInfo]:
+    items: list[VirtualAdapterInfo] = []
+    current_name = ""
+    current_status = ""
+    current_address = ""
+    for line in output.splitlines():
+        header = re.match(r"^([^\s:]+):\s*(.*)$", line)
+        if header:
+            if current_name and _is_virtual_interface_name(current_name):
+                items.append(
+                    VirtualAdapterInfo(
+                        name=current_name,
+                        kind=_virtual_kind_from_name(current_name),
+                        status=current_status,
+                        address=current_address,
+                        source_cidr=_source_cidr_from_address(current_address),
+                        nat_capable=True,
+                        persistent=current_name.startswith("bridge"),
+                        managed=current_name.startswith(("py-virtual", "bridge")),
+                        backend_id=current_name,
+                    )
+                )
+            current_name = header.group(1)
+            current_status = "up" if "UP" in header.group(2) else "down"
+            current_address = ""
+            continue
+        if current_name and not current_address:
+            inet = re.search(r"\binet\s+([0-9.]+)(?:\s+netmask\s+([0-9a-fx.]+))?", line)
+            if inet:
+                prefix = _ifconfig_netmask_to_prefix(inet.group(2) or "") or 24
+                current_address = f"{inet.group(1)}/{prefix}"
+    if current_name and _is_virtual_interface_name(current_name):
+        items.append(
+            VirtualAdapterInfo(
+                name=current_name,
+                kind=_virtual_kind_from_name(current_name),
+                status=current_status,
+                address=current_address,
+                source_cidr=_source_cidr_from_address(current_address),
+                nat_capable=True,
+                persistent=current_name.startswith("bridge"),
+                managed=current_name.startswith(("py-virtual", "bridge")),
+                backend_id=current_name,
+            )
+        )
+    return items
+
+
+def _is_virtual_interface_name(name: str) -> bool:
+    return name.lower().startswith(("utun", "tun", "tap", "bridge", "gif", "stf", "veth", "py-virtual"))
 
 
 def _load_managed_nat_rules() -> list[NatRule]:

@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from .admin import is_admin
 from .backends import BackendError, BaseBackend, get_backend
 from .io import export_snapshot, import_snapshot
-from .models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo
+from .models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo, VirtualAdapterInfo
 from .tk_fonts import configure_tk_fonts
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
@@ -28,6 +28,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapters: list[AdapterInfo] = []
         self.routes: list[RouteInfo] = []
         self.nat_rules: list[NatRule] = []
+        self.virtual_adapters: list[VirtualAdapterInfo] = []
         self.global_forwarding_enabled: bool | None = None
         self.imported_snapshot: NetworkSnapshot | None = None
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -38,6 +39,7 @@ class NetworkManagerApp(tk.Tk):
         self._busy_elapsed_after_id: str | None = None
         self._admin_only_widgets: list[tk.Widget] = []
         self._last_suggested_loopback_value = _default_loopback_value(self.backend.name)
+        self._last_suggested_virtual_value = _default_virtual_adapter_value(self.backend.name)
         self._adapter_sort_column = "index"
         self._adapter_sort_descending = False
         self._route_sort_column = "destination"
@@ -267,6 +269,27 @@ class NetworkManagerApp(tk.Tk):
         self.delete_loopback_button.grid(row=15, column=0, columnspan=2, sticky="ew")
         self._admin_only_widgets.append(self.delete_loopback_button)
 
+        ttk.Separator(panel).grid(row=16, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Label(panel, text="Virtual NIC", style="Header.TLabel").grid(row=17, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.virtual_name_var = tk.StringVar(value=self._last_suggested_virtual_value)
+        self.virtual_address_var = tk.StringVar(value="192.168.56.1/24")
+        self._labeled_entry(panel, "Name", self.virtual_name_var, 18, admin_required=True)
+        self._labeled_entry(panel, "IPv4 CIDR", self.virtual_address_var, 19, admin_required=True)
+        self.create_virtual_button = ttk.Button(
+            panel,
+            text="Create Virtual NIC",
+            command=self.create_virtual_adapter,
+        )
+        self.create_virtual_button.grid(row=20, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self._admin_only_widgets.append(self.create_virtual_button)
+        self.delete_virtual_button = ttk.Button(
+            panel,
+            text="Delete Selected Virtual NIC",
+            command=self.delete_selected_virtual_adapter,
+        )
+        self.delete_virtual_button.grid(row=21, column=0, columnspan=2, sticky="ew")
+        self._admin_only_widgets.append(self.delete_virtual_button)
+
     def _build_routes_tab(self) -> None:
         self.routes_paned, table_frame, panel = self._build_split_tab(self.routes_tab)
 
@@ -433,14 +456,19 @@ class NetworkManagerApp(tk.Tk):
             busy_message="Loading adapters and routes...",
         )
 
-    def _load_network_state(self) -> tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], bool | None]:
-        with ThreadPoolExecutor(max_workers=4) as executor:
+    def _load_network_state(
+        self,
+    ) -> tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], list[VirtualAdapterInfo], bool | None]:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             adapters_future = executor.submit(self.backend.list_adapters)
             routes_future = executor.submit(self.backend.list_routes)
             nat_future = executor.submit(self.backend.list_nat_rules)
+            list_virtual_adapters = getattr(self.backend, "list_virtual_adapters", lambda: [])
+            virtual_future = executor.submit(list_virtual_adapters)
             global_forwarding_future = executor.submit(self.backend.get_global_forwarding_enabled)
             optional_errors: list[str] = []
             nat_rules = _future_result_or(nat_future, [], "NAT rules", optional_errors)
+            virtual_adapters = _future_result_or(virtual_future, [], "Virtual adapters", optional_errors)
             global_forwarding = _future_result_or(
                 global_forwarding_future,
                 None,
@@ -452,17 +480,25 @@ class NetworkManagerApp(tk.Tk):
                 adapters_future.result(),
                 routes_future.result(),
                 nat_rules,
+                virtual_adapters,
                 global_forwarding,
             )
 
-    def _on_network_state_loaded(self, payload: tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], bool | None]) -> None:
-        self.adapters, self.routes, self.nat_rules, self.global_forwarding_enabled = payload
+    def _on_network_state_loaded(
+        self,
+        payload: tuple[list[AdapterInfo], list[RouteInfo], list[NatRule], list[VirtualAdapterInfo], bool | None],
+    ) -> None:
+        self.adapters, self.routes, self.nat_rules, self.virtual_adapters, self.global_forwarding_enabled = payload
         self._refresh_global_forwarding_controls()
         self._refresh_loopback_suggestion()
+        self._refresh_virtual_suggestion()
         self._populate_adapters()
         self._populate_routes()
         self._populate_nat_rules()
-        status = f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, and {len(self.nat_rules)} NAT rules."
+        status = (
+            f"Loaded {len(self.adapters)} adapters, {len(self.routes)} routes, "
+            f"{len(self.nat_rules)} NAT rules, and {len(self.virtual_adapters)} virtual NICs."
+        )
         if self._optional_load_errors:
             status += " Some optional status items are unavailable; see the log."
             for message in self._optional_load_errors:
@@ -490,7 +526,7 @@ class NetworkManagerApp(tk.Tk):
                     adapter.mac,
                     ", ".join(adapter.gateways),
                     ", ".join(adapter.dns_servers),
-                    "Loopback" if adapter.is_loopback else "Physical",
+                    _adapter_kind(adapter),
                 ),
             )
         if selected is not None and selected in self.adapter_tree.get_children():
@@ -549,7 +585,7 @@ class NetworkManagerApp(tk.Tk):
             "mac": adapter.mac,
             "gateway": ", ".join(adapter.gateways),
             "dns": ", ".join(adapter.dns_servers),
-            "kind": "Loopback" if adapter.is_loopback else "Physical",
+            "kind": _adapter_kind(adapter),
         }
         if column == "index":
             return (0, values["index"].zfill(8))
@@ -695,6 +731,10 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_forwarding_var.set(True if adapter.forwarding_enabled is None else adapter.forwarding_enabled)
         if adapter.is_loopback and not self.loopback_name_var.get().strip():
             self.loopback_name_var.set(adapter.name)
+        if adapter.is_virtual:
+            self.virtual_name_var.set(adapter.name)
+            if ipv4:
+                self.virtual_address_var.set(_format_address(ipv4))
 
     def _on_route_select(self, _event: tk.Event | None = None) -> None:
         route = self._selected_route()
@@ -780,6 +820,31 @@ class NetworkManagerApp(tk.Tk):
             plan = self.backend.plan_loopback_delete(adapter)
         except BackendError as exc:
             messagebox.showerror("Loopback Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def create_virtual_adapter(self) -> None:
+        name = self.virtual_name_var.get().strip()
+        if not name:
+            messagebox.showinfo("Virtual NIC Name Required", "Enter a virtual NIC name.")
+            return
+        try:
+            address = _address_from_text(self.virtual_address_var.get().strip() or "192.168.56.1/24")
+            plan = self.backend.plan_virtual_adapter_create(name, address)
+        except (ValueError, BackendError) as exc:
+            messagebox.showerror("Virtual NIC Error", str(exc))
+            return
+        self._confirm_and_run(plan)
+
+    def delete_selected_virtual_adapter(self) -> None:
+        adapter = self._selected_virtual_adapter()
+        if adapter is None:
+            messagebox.showinfo("No Virtual NIC Selected", "Select a virtual NIC first.")
+            return
+        try:
+            plan = self.backend.plan_virtual_adapter_delete(adapter)
+        except BackendError as exc:
+            messagebox.showerror("Virtual NIC Error", str(exc))
             return
         self._confirm_and_run(plan)
 
@@ -922,6 +987,7 @@ class NetworkManagerApp(tk.Tk):
             adapters=self.adapters or self.backend.list_adapters(),
             routes=self.routes or self.backend.list_routes(),
             nat_rules=self.nat_rules or self.backend.list_nat_rules(),
+            virtual_adapters=self.virtual_adapters or self.backend.list_virtual_adapters(),
             global_forwarding_enabled=(
                 self.global_forwarding_enabled
                 if self.global_forwarding_enabled is not None
@@ -1164,6 +1230,26 @@ class NetworkManagerApp(tk.Tk):
         except (IndexError, ValueError):
             return None
 
+    def _selected_virtual_adapter(self) -> VirtualAdapterInfo | None:
+        selected_adapter = self._selected_adapter()
+        if selected_adapter is None:
+            return None
+        selected_name = selected_adapter.name.lower()
+        for adapter in self.virtual_adapters:
+            if adapter.name.lower() == selected_name or adapter.backend_id.lower() == selected_adapter.id.lower():
+                return adapter
+        if selected_adapter.is_virtual:
+            ipv4 = _first_ipv4(selected_adapter)
+            return VirtualAdapterInfo(
+                name=selected_adapter.name,
+                kind=selected_adapter.virtual_kind or "virtual",
+                status=selected_adapter.status,
+                address=_format_address(ipv4),
+                source_cidr=_source_cidr_from_text(_format_address(ipv4)),
+                backend_id=selected_adapter.id,
+            )
+        return None
+
     def _refresh_loopback_suggestion(self) -> None:
         current = self.loopback_name_var.get().strip()
         if current and current != self._last_suggested_loopback_value:
@@ -1171,6 +1257,14 @@ class NetworkManagerApp(tk.Tk):
         suggestion = _suggest_loopback_value(self.backend.name, self.adapters)
         self._last_suggested_loopback_value = suggestion
         self.loopback_name_var.set(suggestion)
+
+    def _refresh_virtual_suggestion(self) -> None:
+        current = self.virtual_name_var.get().strip()
+        if current and current != self._last_suggested_virtual_value:
+            return
+        suggestion = _suggest_virtual_adapter_value(self.backend.name, self.adapters)
+        self._last_suggested_virtual_value = suggestion
+        self.virtual_name_var.set(suggestion)
 
 
 class PlanDialog(tk.Toplevel):
@@ -1248,6 +1342,34 @@ def _format_address(address: AddressInfo | None) -> str:
     return f"{address.address}/{address.prefix_length}"
 
 
+def _address_from_text(value: str) -> AddressInfo | None:
+    text = value.strip()
+    if not text:
+        return None
+    if "/" in text:
+        interface = ipaddress.ip_interface(text)
+        return AddressInfo(str(interface.ip), int(interface.network.prefixlen), f"ipv{interface.ip.version}")
+    return AddressInfo(validate_ip(text), 24, "ipv4")
+
+
+def _source_cidr_from_text(value: str) -> str:
+    text = value.strip()
+    if not text or "/" not in text:
+        return ""
+    try:
+        return str(ipaddress.ip_interface(text).network)
+    except ValueError:
+        return ""
+
+
+def _adapter_kind(adapter: AdapterInfo) -> str:
+    if adapter.is_loopback:
+        return "Loopback"
+    if adapter.is_virtual:
+        return f"Virtual ({adapter.virtual_kind})" if adapter.virtual_kind else "Virtual"
+    return "Physical"
+
+
 def _future_result_or(future, fallback, label: str = "Optional state", errors: list[str] | None = None):
     try:
         return future.result()
@@ -1280,6 +1402,12 @@ def _default_loopback_value(backend_name: str) -> str:
     return "py-loopback0"
 
 
+def _default_virtual_adapter_value(backend_name: str) -> str:
+    if backend_name in {"macOS", "POSIX"}:
+        return "bridge0"
+    return "py-virtual0"
+
+
 def _suggest_loopback_value(backend_name: str, adapters: list[AdapterInfo]) -> str:
     if backend_name in {"macOS", "POSIX"}:
         used_addresses = {
@@ -1298,6 +1426,22 @@ def _suggest_loopback_value(backend_name: str, adapters: list[AdapterInfo]) -> s
     index = 0
     while True:
         candidate = f"py-loopback{index}"
+        if candidate.lower() not in used_names:
+            return candidate
+        index += 1
+
+
+def _suggest_virtual_adapter_value(backend_name: str, adapters: list[AdapterInfo]) -> str:
+    used_names = {adapter.name.strip().lower() for adapter in adapters}
+    if backend_name in {"macOS", "POSIX"}:
+        for index in range(0, 256):
+            candidate = f"bridge{index}"
+            if candidate.lower() not in used_names:
+                return candidate
+        return "bridge256"
+    index = 0
+    while True:
+        candidate = f"py-virtual{index}"
         if candidate.lower() not in used_names:
             return candidate
         index += 1
