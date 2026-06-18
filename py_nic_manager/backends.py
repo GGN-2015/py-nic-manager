@@ -932,7 +932,7 @@ function Get-BestInternalInterface {
     $route = $routes |
       Sort-Object @{ Expression = { -1 * (Get-IPv4PrefixLength $_.DestinationPrefix) } }, RouteMetric, InterfaceAlias |
       Select-Object -First 1
-    $adapter = Get-NetAdapter -InterfaceAlias $route.InterfaceAlias -IncludeHidden -ErrorAction SilentlyContinue
+    $adapter = Get-NetAdapter -Name $route.InterfaceAlias -IncludeHidden -ErrorAction SilentlyContinue
     $kind = ""
     if ($adapter.InterfaceDescription -match "TAP") { $kind = "tap" }
     elseif ($adapter.InterfaceDescription -match "Wintun|WireGuard") { $kind = "wintun" }

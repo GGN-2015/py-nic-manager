@@ -16,7 +16,7 @@ from py_nic_manager.backends import (
     _macos_adapter_forwarding_state,
     decode_command_output,
 )
-from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
+from py_nic_manager.api import NetworkManager, PrivilegeError, sort_adapters as api_sort_adapters, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
 from py_nic_manager import windows_device_policy, windows_loopback, windows_tap, windows_virtual
@@ -361,6 +361,18 @@ def test_route_numeric_and_text_sort_keys() -> None:
     assert [route.interface for route in by_interface] == ["ethernet", "loopback", "wifi"]
 
 
+def test_adapter_ics_sort_column_is_available_in_public_api() -> None:
+    adapters = [
+        AdapterInfo("tap-id", "py-tap", is_virtual=True, virtual_kind="tap", ics_compatible=True),
+        AdapterInfo("wintun-id", "py-wintun", is_virtual=True, virtual_kind="wintun", ics_compatible=False),
+        AdapterInfo("ethernet-id", "Ethernet"),
+    ]
+
+    ordered = api_sort_adapters(adapters, sort_by="ics")
+
+    assert [adapter.name for adapter in ordered] == ["Ethernet", "py-wintun", "py-tap"]
+
+
 def test_windows_adapter_plan_contains_netsh_and_mac_property() -> None:
     backend = WindowsBackend(dry_run=True)
     adapter = AdapterInfo(id="id", name="Ethernet", mac="00-11-22-33-44-55")
@@ -661,6 +673,44 @@ def test_tap_driver_assets_are_bundled_for_windows_ics() -> None:
     assert (Path("py_nic_manager") / "assets" / "tap-windows6" / "COPYRIGHT.GPL").exists()
 
 
+def test_windows_tap_create_cleans_up_adapter_after_post_create_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    driver_dir = tmp_path / "driver"
+    driver_dir.mkdir()
+    (driver_dir / "OemVista.inf").write_text("", encoding="utf-8")
+    (driver_dir / "devcon.exe").write_text("", encoding="utf-8")
+    adapter = {
+        "Name": "Ethernet TAP",
+        "InterfaceIndex": 77,
+        "PnPDeviceID": r"ROOT\\TAP0901\\0001",
+    }
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(windows_tap, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(windows_tap, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(windows_tap, "ensure_ndis_device_install_policy", lambda: calls.append(("policy", "")))
+    monkeypatch.setattr(windows_tap, "_load_state", lambda name: {})
+    monkeypatch.setattr(windows_tap, "_adapter_info", lambda name: None)
+    monkeypatch.setattr(windows_tap, "_net_adapters", lambda: [])
+    monkeypatch.setattr(windows_tap, "_tap_driver_dir", lambda: driver_dir)
+    monkeypatch.setattr(windows_tap, "_run", lambda command: calls.append(("run", command)) or "")
+    monkeypatch.setattr(windows_tap, "_wait_for_new_adapter", lambda name, before, timeout: adapter)
+    monkeypatch.setattr(
+        windows_tap,
+        "_rename_adapter",
+        lambda current, new: (_ for _ in ()).throw(RuntimeError("rename failed")),
+    )
+    monkeypatch.setattr(windows_tap, "_remove_adapter", lambda item: calls.append(("remove", item["PnPDeviceID"])))
+    monkeypatch.setattr(windows_tap, "_wait_for_adapter_removed", lambda name, timeout: calls.append(("wait", timeout)))
+
+    with pytest.raises(RuntimeError, match="rename failed"):
+        windows_tap.create_virtual_adapter("py-virtual0", "192.168.56.1/24")
+
+    assert ("remove", r"ROOT\\TAP0901\\0001") in calls
+    assert ("wait", 15) in calls
+
+
 def test_windows_wintun_configures_address_by_interface_index(monkeypatch: pytest.MonkeyPatch) -> None:
     scripts: list[str] = []
 
@@ -830,6 +880,8 @@ def test_windows_nat_plan_uses_rras_or_ics_only() -> None:
     assert "Set-Service" in rendered
     assert "SharedAccess" in rendered
     assert 'InterfaceAlias $InterfaceAlias' in rendered
+    assert "Get-NetAdapter -InterfaceAlias" not in rendered
+    assert "Get-NetAdapter -Name $route.InterfaceAlias" in rendered
     assert '$outboundInterface = "WLAN"' in rendered
     assert '$sourceCidr = "192.168.1.0/30"' in rendered
     assert "Get-BestInternalInterface" in rendered

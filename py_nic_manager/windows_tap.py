@@ -42,26 +42,30 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
     _run(["pnputil", "/add-driver", str(inf_path), "/install"])
     _run([str(devcon_path), "install", str(inf_path), HARDWARE_ID])
     adapter = _wait_for_new_adapter(clean_name, before, timeout=45)
-    if str(adapter.get("Name") or "") != clean_name:
-        _rename_adapter(str(adapter.get("Name") or ""), clean_name)
-        adapter = _wait_for_adapter(clean_name, timeout=30)
-    assert_ndis_net_adapter(
-        name=clean_name,
-        interface_index=adapter.get("InterfaceIndex"),
-        pnp_device_id=str(adapter.get("PnPDeviceID", "")),
-    )
-    if address:
-        _configure_address(clean_name, address)
-    _save_state(
-        clean_name,
-        {
-            "name": clean_name,
-            "address": address,
-            "driver": "tap-windows6",
-            "hardware_id": HARDWARE_ID,
-            "created_at": int(time.time()),
-        },
-    )
+    try:
+        if str(adapter.get("Name") or "") != clean_name:
+            _rename_adapter(str(adapter.get("Name") or ""), clean_name)
+            adapter = _wait_for_adapter(clean_name, timeout=30)
+        assert_ndis_net_adapter(
+            name=clean_name,
+            interface_index=adapter.get("InterfaceIndex"),
+            pnp_device_id=str(adapter.get("PnPDeviceID", "")),
+        )
+        if address:
+            _configure_address(clean_name, address)
+        _save_state(
+            clean_name,
+            {
+                "name": clean_name,
+                "address": address,
+                "driver": "tap-windows6",
+                "hardware_id": HARDWARE_ID,
+                "created_at": int(time.time()),
+            },
+        )
+    except Exception:
+        _cleanup_created_adapter(clean_name, adapter)
+        raise
     print(f"TAP virtual adapter created: {clean_name}")
 
 
@@ -299,6 +303,20 @@ if ($LASTEXITCODE -ne 0) {{
 }}
 """
     _run_powershell(script)
+
+
+def _cleanup_created_adapter(name: str, adapter: dict[str, object] | None) -> None:
+    current = _adapter_info(name) or adapter
+    if not current:
+        return
+    try:
+        _remove_adapter(current)
+    except Exception:
+        return
+    try:
+        _wait_for_adapter_removed(name, timeout=15)
+    except Exception:
+        pass
 
 
 def _state_path(name: str) -> Path:

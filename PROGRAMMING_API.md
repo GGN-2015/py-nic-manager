@@ -210,6 +210,7 @@ Adapter sort columns:
 - `name`
 - `status`
 - `forwarding`
+- `ics`
 - `ipv4`
 - `mac`
 - `gateway`

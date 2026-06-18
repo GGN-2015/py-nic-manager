@@ -30,7 +30,7 @@ NatRef = NatRule | str
 VirtualAdapterRef = VirtualAdapterInfo | str | int
 SnapshotRef = NetworkSnapshot | str | Path
 
-ADAPTER_SORT_COLUMNS = {"index", "name", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind"}
+ADAPTER_SORT_COLUMNS = {"index", "name", "status", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"}
 ROUTE_SORT_COLUMNS = {
     "destination",
     "gateway",
@@ -626,6 +626,7 @@ def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int
         "name": adapter.name,
         "status": adapter.status,
         "forwarding": _format_forwarding(adapter.forwarding_enabled),
+        "ics": _format_ics_compatible(adapter),
         "ipv4": "" if ipv4 is None else _format_address(ipv4),
         "mac": adapter.mac,
         "gateway": ", ".join(adapter.gateways),
@@ -805,6 +806,14 @@ def _format_forwarding(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"
+
+
+def _format_ics_compatible(adapter: AdapterInfo) -> str:
+    if adapter.ics_compatible is True:
+        return "Yes"
+    if adapter.ics_compatible is False:
+        return "No"
+    return "Unknown" if adapter.is_virtual or adapter.is_loopback else "N/A"
 
 
 def _network_sort_key(value: str) -> tuple:
