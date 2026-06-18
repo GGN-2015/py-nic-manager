@@ -155,6 +155,9 @@ Py NIC Manager sets created TAP adapters to TAP's "Always Connected" media
 mode. The table still separates `Status` from `Admin`: `Status` is Windows'
 media/link state, while `Admin` is the enable/disable state controlled by the
 Enable/Disable buttons.
+After assigning the requested IPv4 address, virtual NIC creation verifies that
+the local host can ping that address. If the check fails, creation fails instead
+of treating an unusable virtual NIC as successful.
 Use the virtual NIC's source CIDR as the NAT internal network. The adapter list
 shows an "ICS Compatible" column so the selected internal interface is not a
 guess.
@@ -192,6 +195,7 @@ the requested IPv4 CIDR and is intended to be the NAT internal interface; the
 peer side is brought up so users can attach it to a namespace, container,
 bridge, or test stack. The runtime interface is created immediately. Persist it
 with your distribution's network manager if it must survive reboot.
+Creation verifies local ping reachability to the assigned IPv4 address.
 
 Per-adapter IPv4 router forwarding uses
 `net.ipv4.conf.<interface>.forwarding`.
@@ -217,6 +221,7 @@ the requested IPv4 CIDR to that bridge. Existing `utun`, `tun`, `tap`, and
 bridge interfaces created by VPN/Network Extension providers are also shown in
 the virtual NIC list when present. These interfaces can be used as the internal
 side/source network for `pf` NAT rules.
+Creation verifies local ping reachability to the assigned IPv4 address.
 
 macOS has a global IPv4 forwarding switch rather than the same per-interface
 switch exposed by Windows and Linux. Py NIC Manager enables global forwarding
@@ -236,6 +241,8 @@ some mutating operations are intentionally limited because network management
 varies widely across BSDs and commercial Unix systems.
 Virtual NIC creation attempts portable `ifconfig <bridgeN> create` bridge
 creation; unsupported systems fail clearly during the command preview/run.
+Creation verifies local ping reachability to the assigned IPv4 address when the
+interface is created.
 
 ## Configuration Snapshots
 

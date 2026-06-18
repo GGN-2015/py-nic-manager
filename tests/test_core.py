@@ -749,6 +749,7 @@ def test_windows_tap_create_sets_media_status_always_connected(monkeypatch: pyte
     monkeypatch.setattr(windows_tap, "_wait_for_new_adapter", lambda name, before, timeout: adapter)
     monkeypatch.setattr(windows_tap, "assert_ndis_net_adapter", lambda **kwargs: None)
     monkeypatch.setattr(windows_tap, "_configure_address", lambda name, address: calls.append(("address", address)))
+    monkeypatch.setattr(windows_tap, "_assert_address_pingable", lambda name, address: calls.append(("ping", address)))
     monkeypatch.setattr(windows_tap, "_save_state", lambda name, state: calls.append(("state", state)))
 
     windows_tap.create_virtual_adapter("py-virtual0", "192.168.56.1/24")
@@ -758,6 +759,7 @@ def test_windows_tap_create_sets_media_status_always_connected(monkeypatch: pyte
     assert 'RegistryValue "1"' in rendered
     assert "Disable-NetAdapter" in rendered
     assert "Enable-NetAdapter" in rendered
+    assert ("ping", "192.168.56.1/24") in calls
 
 
 def test_windows_wintun_configures_address_by_interface_index(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -854,14 +856,18 @@ def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.Mo
     monkeypatch.setattr(windows_wintun, "assert_ndis_net_adapter", lambda **kwargs: calls.append(("ndis", kwargs["interface_index"])))
     monkeypatch.setattr(windows_wintun.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(windows_wintun, "_wait_for_adapter", lambda name, timeout: {"Name": name, "InterfaceIndex": 42})
+    monkeypatch.setattr(windows_wintun, "_configure_address", lambda name, address: calls.append(("address", address)))
     monkeypatch.setattr(windows_wintun, "_install_startup_task", lambda name, address: "task")
+    monkeypatch.setattr(windows_wintun, "_assert_address_pingable", lambda name, address: calls.append(("ping", address)))
     monkeypatch.setattr(windows_wintun, "_save_state", lambda name, state: saved_states.append(state))
 
-    windows_wintun.create_virtual_adapter("py-virtual0")
+    windows_wintun.create_virtual_adapter("py-virtual0", "192.168.56.1/24")
 
     assert len(popen_commands) == 1
     assert ("policy", "") in calls
     assert ("ndis", 42) in calls
+    assert ("address", "192.168.56.1/24") in calls
+    assert ("ping", "192.168.56.1/24") in calls
     assert "--stop-file" in popen_commands[0]
     assert str(tmp_path) in popen_commands[0][popen_commands[0].index("--stop-file") + 1]
     assert saved_states[0]["stop_path"]
@@ -886,6 +892,7 @@ def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:
 
     assert ["ip", "link", "add", "py-virtual0", "type", "veth", "peer", "name", "py-virtual-peer"] in plan.commands
     assert ["ip", "addr", "add", "192.168.56.1/24", "dev", "py-virtual0"] in plan.commands
+    assert ["ping", "-c", "1", "-W", "2", "192.168.56.1"] in plan.commands
     assert plan.title == "Create virtual adapter"
 
 
@@ -896,6 +903,25 @@ def test_macos_virtual_adapter_plan_creates_bridge() -> None:
 
     assert ["ifconfig", "bridge9", "create"] in plan.commands
     assert ["ifconfig", "bridge9", "inet", "192.168.56.1/24", "up"] in plan.commands
+    assert ["ping", "-c", "1", "-W", "2", "192.168.56.1"] in plan.commands
+
+
+def test_run_plan_stops_after_first_failed_command() -> None:
+    class FailingPlanBackend(LinuxBackend):
+        def __init__(self) -> None:
+            super().__init__(dry_run=False)
+            self.commands: list[list[str]] = []
+
+        def run(self, command: list[str]) -> CommandResult:
+            self.commands.append(command)
+            return CommandResult(command, 1 if command[0] == "fail" else 0)
+
+    backend = FailingPlanBackend()
+
+    results = backend.run_plan(OperationPlan("test", [["ok"], ["fail"], ["after"]]))
+
+    assert [result.command for result in results] == [["ok"], ["fail"]]
+    assert backend.commands == [["ok"], ["fail"]]
 
 
 def test_iptables_nat_parser_marks_managed_and_external_rules() -> None:

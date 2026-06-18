@@ -263,7 +263,10 @@ class BaseBackend(ABC):
     def run_plan(self, plan: OperationPlan) -> list[CommandResult]:
         results: list[CommandResult] = []
         for command in plan.commands:
-            results.append(self.run(command))
+            result = self.run(command)
+            results.append(result)
+            if not result.ok:
+                break
         return results
 
     def plan_restart_system(self) -> OperationPlan:
@@ -1455,6 +1458,7 @@ class LinuxBackend(BaseBackend):
                 ["ip", "addr", "add", cidr, "dev", clean_name],
                 ["ip", "link", "set", "dev", clean_name, "up"],
                 ["ip", "link", "set", "dev", peer_name, "up"],
+                _posix_ping_command(_cidr_ip(cidr)),
             ],
             [
                 "Linux creates a veth pair that can be used as a NAT internal network.",
@@ -1724,6 +1728,7 @@ class MacOSBackend(BaseBackend):
             [
                 ["ifconfig", clean_name, "create"],
                 ["ifconfig", clean_name, "inet", cidr, "up"],
+                _posix_ping_command(_cidr_ip(cidr)),
             ],
             [
                 "macOS creates a bridge interface as a non-loopback virtual NIC.",
@@ -1980,6 +1985,7 @@ class GenericPosixBackend(BaseBackend):
             [
                 ["ifconfig", clean_name, "create"],
                 ["ifconfig", clean_name, "inet", cidr, "up"],
+                _posix_ping_command(_cidr_ip(cidr)),
             ],
             [
                 "Generic POSIX backends try to create a bridge interface with ifconfig.",
@@ -2268,6 +2274,14 @@ def _address_to_cidr(address: AddressInfo | None, default: str) -> str:
     if not address.address:
         return default
     return f"{address.address}/{address.prefix_length or 24}"
+
+
+def _cidr_ip(value: str) -> str:
+    return value.split("/", 1)[0].strip()
+
+
+def _posix_ping_command(ip: str) -> list[str]:
+    return ["ping", "-c", "1", "-W", "2", ip]
 
 
 def _address_from_cidr(value: str) -> AddressInfo | None:

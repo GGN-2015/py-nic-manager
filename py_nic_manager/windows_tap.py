@@ -54,6 +54,7 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
         _set_always_connected(clean_name)
         if address:
             _configure_address(clean_name, address)
+            _assert_address_pingable(clean_name, address)
         _save_state(
             clean_name,
             {
@@ -302,6 +303,28 @@ def _source_cidr(address: str) -> str:
         return str(ipaddress.ip_interface(address).network)
     except ValueError:
         return ""
+
+
+def _address_ip(address: str) -> str:
+    return address.split("/", 1)[0].strip()
+
+
+def _assert_address_pingable(name: str, address: str) -> None:
+    ip = _address_ip(address)
+    if not ip:
+        return
+    last_error = ""
+    for _attempt in range(12):
+        completed = subprocess.run(["ping", "-n", "1", "-w", "1000", ip], capture_output=True, check=False)
+        if completed.returncode == 0:
+            return
+        output = (decode_command_output(completed.stdout) + "\n" + decode_command_output(completed.stderr)).strip()
+        last_error = output or f"ping exited with code {completed.returncode}"
+        time.sleep(1)
+    raise RuntimeError(
+        f"TAP virtual adapter '{name}' was created with {address}, but the local host cannot ping {ip}. "
+        f"The adapter is not usable like a loopback adapter. Last ping error: {last_error}"
+    )
 
 
 def _remove_adapter(adapter: dict[str, object]) -> None:

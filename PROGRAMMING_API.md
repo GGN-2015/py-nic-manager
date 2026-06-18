@@ -429,6 +429,12 @@ results = manager.create_virtual_adapter(
 )
 ```
 
+Creation is considered successful only after the backend verifies that the local
+host can ping the assigned IPv4 address. On Windows this check happens inside
+the virtual NIC helper and a failed TAP creation is cleaned up before returning.
+On POSIX backends the create plan includes a final `ping` command and plan
+execution stops at the first failed command.
+
 List virtual NICs and use their source CIDR for NAT:
 
 ```python
