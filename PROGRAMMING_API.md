@@ -447,10 +447,12 @@ results = manager.create_nat_rule(
 )
 ```
 
-The `outbound_interface` argument is always the outbound interface name from
-the user's point of view. Windows WinNAT internally needs an external IP prefix;
-Py NIC Manager resolves the interface to that prefix before running
-`New-NetNat`.
+The `outbound_interface` argument is always the outbound/public interface name
+from the user's point of view. On Windows, Py NIC Manager uses RRAS NAT when
+available and falls back to Internet Connection Sharing (ICS). The source CIDR
+is used to infer the private/internal interface, while `outbound_interface`
+selects the public/shared interface. Windows ICS supports one public shared
+interface at a time, so an ICS-backed rule may replace another ICS sharing setup.
 
 Delete a NAT rule:
 
@@ -459,11 +461,12 @@ manager.delete_nat_rule("lab-nat")
 ```
 
 On supported platforms, NAT create/update/delete operations are immediate and
-persistent after the command plan succeeds. Windows uses persistent WinNAT.
-Linux writes `/etc/py-nic-manager/nat-rules.json`, reapplies iptables
-MASQUERADE rules immediately, and installs a systemd boot service. macOS writes
-a persistent `pf` anchor and reloads `pf` immediately. If the backend cannot
-make the rule persistent, the command fails rather than reporting success.
+persistent after the command plan succeeds. Windows uses persistent RRAS/ICS
+configuration plus Py NIC Manager metadata under `ProgramData`. Linux writes
+`/etc/py-nic-manager/nat-rules.json`, reapplies iptables MASQUERADE rules
+immediately, and installs a systemd boot service. macOS writes a persistent
+`pf` anchor and reloads `pf` immediately. If the backend cannot make the rule
+persistent, the command fails rather than reporting success.
 
 Rules discovered at runtime but not managed by Py NIC Manager may be shown with
 `managed=False`; snapshot apply does not delete those external rules.

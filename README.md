@@ -133,11 +133,14 @@ Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
 Global IPv4 router forwarding uses the Windows `IPEnableRouter` registry
 setting under `Tcpip\Parameters`.
 
-Persistent NAT uses Windows WinNAT (`Get-NetNat`, `New-NetNat`, and
-`Remove-NetNat`). WinNAT rules are persistent and take effect immediately after
-the command succeeds. You still select an outbound interface in Py NIC Manager;
-the Windows backend resolves that interface to the external IPv4 prefix required
-by WinNAT before creating the rule.
+Persistent NAT uses Windows RRAS NAT when that netsh context is available and
+falls back to Internet Connection Sharing (ICS) through `HNetCfg.HNetShare`.
+Rules take effect immediately after the command succeeds and persist through the
+Windows RRAS/ICS configuration. You still select an outbound interface in Py NIC
+Manager; the Windows backend uses that interface as the public/shared interface
+and infers the private/internal interface from the source CIDR. Windows ICS
+supports one public shared interface at a time, so an ICS-backed rule may replace
+another ICS sharing setup.
 
 ### Linux
 

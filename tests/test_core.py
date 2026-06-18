@@ -408,13 +408,42 @@ def test_windows_global_forwarding_read_avoids_noisy_missing_value_cmdlet() -> N
     assert "Get-ItemPropertyValue" not in rendered
 
 
-def test_windows_nat_read_is_optional_when_winnat_is_unavailable() -> None:
+def test_windows_nat_read_uses_managed_rras_ics_state_without_winnat() -> None:
+    class CapturingWindowsBackend(WindowsBackend):
+        command: list[str] | None = None
+
+        def run_json(self, command: list[str]) -> object:
+            self.command = command
+            return {
+                "name": "nat0",
+                "source_cidr": "192.168.1.0/30",
+                "outbound_interface": "WLAN",
+                "enabled": True,
+                "persistent": True,
+                "managed": True,
+                "family": "ipv4",
+            }
+
+    backend = CapturingWindowsBackend(dry_run=True)
+
+    rules = backend.list_nat_rules()
+
+    assert len(rules) == 1
+    assert rules[0].name == "nat0"
+    assert rules[0].outbound_interface == "WLAN"
+    assert backend.command is not None
+    rendered = " ".join(backend.command)
+    assert "HNetCfg.HNetShare" in rendered
+    assert "ProgramData" in rendered
+
+
+def test_windows_nat_read_is_optional_when_rras_ics_state_is_unavailable() -> None:
     class FailingWindowsBackend(WindowsBackend):
         command: list[str] | None = None
 
         def run_json(self, command: list[str]) -> object:
             self.command = command
-            raise BackendError("Get-NetNat is unavailable.")
+            raise BackendError("NAT state is unavailable.")
 
     backend = FailingWindowsBackend(dry_run=True)
 
@@ -423,7 +452,7 @@ def test_windows_nat_read_is_optional_when_winnat_is_unavailable() -> None:
     assert rules == []
     assert backend.command is not None
     rendered = " ".join(backend.command)
-    assert "Get-Command Get-NetNat" in rendered
+    assert "HNetCfg.HNetShare" in rendered
 
 
 def test_linux_route_plan_uses_ipv4_ip_route() -> None:
@@ -503,22 +532,28 @@ def test_iptables_nat_parser_marks_managed_and_external_rules() -> None:
     assert rules[1].persistent is False
 
 
-def test_windows_nat_plan_uses_persistent_winnat() -> None:
+def test_windows_nat_plan_uses_rras_or_ics_only() -> None:
     backend = WindowsBackend(dry_run=True)
 
-    plan = backend.plan_nat_create(NatRule("nat0", "192.168.0.0/24", "WLAN"))
+    plan = backend.plan_nat_create(NatRule("nat0", "192.168.1.0/30", "WLAN"))
     rendered = " ".join(plan.commands[0])
 
     assert plan.restart_required is False
-    assert "New-NetNat" in rendered
-    assert "InternalIPInterfaceAddressPrefix" in rendered
-    assert "ExternalIPInterfaceAddressPrefix" in rendered
-    assert 'InterfaceAlias $outboundInterface' in rendered
+    assert "HNetCfg.HNetShare" in rendered
+    assert '"routing", "ip", "nat"' in rendered
+    assert "Invoke-RrasNat" in rendered
+    assert "Invoke-IcsNat" in rendered
+    assert "Set-Service" in rendered
+    assert "SharedAccess" in rendered
+    assert 'InterfaceAlias $InterfaceAlias' in rendered
     assert '$outboundInterface = "WLAN"' in rendered
+    assert '$sourceCidr = "192.168.1.0/30"' in rendered
+    assert "Get-BestInternalInterface" in rendered
+    assert "ProgramData" in rendered
     assert "4294967295" in rendered
     assert "0xffffffff" not in rendered
     assert "Test-IPv4PrefixOverlap" in rendered
-    assert "Failed to create Windows WinNAT rule" in rendered
+    assert "Failed to create Windows RRAS/ICS NAT rule" in rendered
     assert "Stop-PyNicManagerCommand" in rendered
 
 

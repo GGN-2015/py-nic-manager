@@ -349,30 +349,112 @@ Get-NetRoute -AddressFamily IPv4 |
 
     def list_nat_rules(self) -> list[NatRule]:
         script = r"""
-if (-not (Get-Command Get-NetNat -ErrorAction SilentlyContinue)) {
-  ConvertTo-Json -InputObject @() -Depth 4
-  return
+function Get-PyNicNatStatePath {
+  Join-Path $env:ProgramData "py-nic-manager\nat-rules.json"
 }
-try {
-  $rules = @(
-    Get-NetNat -ErrorAction Stop |
-      Sort-Object -Property Name |
-      ForEach-Object {
-        [pscustomobject]@{
-          name = [string]$_.Name
-          source_cidr = [string]$_.InternalIPInterfaceAddressPrefix
-          outbound_interface = [string]$_.ExternalIPInterfaceAddressPrefix
-          enabled = [bool]($true)
-          persistent = [bool]($true)
-          managed = [bool]($true)
-          family = "ipv4"
-        }
-      }
+
+function Read-PyNicNatState {
+  $path = Get-PyNicNatStatePath
+  if (-not (Test-Path $path)) { return @() }
+  try {
+    $items = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    return @()
+  }
+  if ($null -eq $items) { return @() }
+  @($items)
+}
+
+function ConvertTo-IPv4UInt {
+  param([string]$IPAddress)
+  $bytes = [System.Net.IPAddress]::Parse($IPAddress).GetAddressBytes()
+  return (
+    ([uint64]$bytes[0] -shl 24) -bor
+    ([uint64]$bytes[1] -shl 16) -bor
+    ([uint64]$bytes[2] -shl 8) -bor
+    [uint64]$bytes[3]
   )
-  ConvertTo-Json -InputObject $rules -Depth 4
-} catch {
-  ConvertTo-Json -InputObject @() -Depth 4
 }
+
+function ConvertFrom-IPv4UInt {
+  param([uint64]$Value)
+  $bytes = [byte[]]@(
+    [byte](($Value -shr 24) -band 255),
+    [byte](($Value -shr 16) -band 255),
+    [byte](($Value -shr 8) -band 255),
+    [byte]($Value -band 255)
+  )
+  [System.Net.IPAddress]::new($bytes).ToString()
+}
+
+function Get-IPv4Mask {
+  param([int]$PrefixLength)
+  if ($PrefixLength -eq 0) { return [uint64]0 }
+  $hostCount = [uint64]1 -shl (32 - $PrefixLength)
+  return [uint64]4294967295 -bxor ($hostCount - 1)
+}
+
+function ConvertTo-IPv4NetworkPrefix {
+  param([string]$IPAddress, [int]$PrefixLength)
+  $network = (ConvertTo-IPv4UInt $IPAddress) -band (Get-IPv4Mask $PrefixLength)
+  "$(ConvertFrom-IPv4UInt $network)/$PrefixLength"
+}
+
+$rules = @()
+foreach ($rule in Read-PyNicNatState) {
+  $rules += [pscustomobject]@{
+    name = [string]$rule.name
+    source_cidr = [string]$rule.source_cidr
+    outbound_interface = [string]$rule.outbound_interface
+    enabled = [bool]($rule.enabled -ne $false)
+    persistent = [bool]$true
+    managed = [bool]$true
+    family = "ipv4"
+  }
+}
+
+try {
+  $manager = New-Object -ComObject HNetCfg.HNetShare
+  $publicName = ""
+  $privateNames = @()
+  foreach ($connection in @($manager.EnumEveryConnection())) {
+    $props = $manager.NetConnectionProps($connection)
+    $config = $manager.INetSharingConfigurationForINetConnection($connection)
+    if (-not $config.SharingEnabled) { continue }
+    if ([int]$config.SharingConnectionType -eq 0) {
+      $publicName = [string]$props.Name
+    } elseif ([int]$config.SharingConnectionType -eq 1) {
+      $privateNames += [string]$props.Name
+    }
+  }
+  foreach ($privateName in $privateNames) {
+    $duplicate = @($rules | Where-Object {
+      $_.outbound_interface -eq $publicName -and $_.name -like "ics:*"
+    })
+    if ($duplicate) { continue }
+    $prefix = ""
+    try {
+      $address = Get-NetIPAddress -InterfaceAlias $privateName -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object { $_.IPAddress -and [int]$_.PrefixLength -lt 32 } |
+        Select-Object -First 1
+      if ($address) {
+        $prefix = ConvertTo-IPv4NetworkPrefix $address.IPAddress ([int]$address.PrefixLength)
+      }
+    } catch {}
+    $rules += [pscustomobject]@{
+      name = "ics:$publicName->$privateName"
+      source_cidr = [string]$prefix
+      outbound_interface = [string]$publicName
+      enabled = [bool]$true
+      persistent = [bool]$true
+      managed = [bool]$false
+      family = "ipv4"
+    }
+  }
+} catch {
+  # ICS may be unavailable on some Windows editions or service configurations.
+}
+$rules | Sort-Object -Property Name | ConvertTo-Json -Depth 4
 """
         try:
             data = self.run_json(_powershell(script))
@@ -547,14 +629,15 @@ New-ItemProperty `
         if not name:
             raise BackendError("A NAT rule name is required.")
         outbound_interface = _validate_nat_outbound_interface(rule.outbound_interface)
-        script = rf"""
-function Stop-PyNicManagerCommand {{
+        script = (
+            r'''
+function Stop-PyNicManagerCommand {
   param([string]$Message)
   [Console]::Error.WriteLine($Message)
   exit 1
-}}
+}
 
-function ConvertTo-IPv4UInt {{
+function ConvertTo-IPv4UInt {
   param([string]$IPAddress)
   $bytes = [System.Net.IPAddress]::Parse($IPAddress).GetAddressBytes()
   return (
@@ -563,9 +646,9 @@ function ConvertTo-IPv4UInt {{
     ([uint64]$bytes[2] -shl 8) -bor
     [uint64]$bytes[3]
   )
-}}
+}
 
-function ConvertFrom-IPv4UInt {{
+function ConvertFrom-IPv4UInt {
   param([uint64]$Value)
   $bytes = [byte[]]@(
     [byte](($Value -shr 24) -band 255),
@@ -574,98 +657,402 @@ function ConvertFrom-IPv4UInt {{
     [byte]($Value -band 255)
   )
   [System.Net.IPAddress]::new($bytes).ToString()
-}}
+}
 
-function Get-IPv4Mask {{
+function Get-IPv4Mask {
   param([int]$PrefixLength)
-  if ($PrefixLength -eq 0) {{
-    return [uint64]0
-  }}
+  if ($PrefixLength -eq 0) { return [uint64]0 }
   $hostCount = [uint64]1 -shl (32 - $PrefixLength)
   return [uint64]4294967295 -bxor ($hostCount - 1)
-}}
+}
 
-function ConvertTo-IPv4NetworkPrefix {{
+function ConvertTo-IPv4NetworkPrefix {
   param([string]$IPAddress, [int]$PrefixLength)
   $network = (ConvertTo-IPv4UInt $IPAddress) -band (Get-IPv4Mask $PrefixLength)
   "$(ConvertFrom-IPv4UInt $network)/$PrefixLength"
-}}
+}
 
-function Get-IPv4PrefixRange {{
+function Get-IPv4PrefixRange {
   param([string]$Prefix)
   $address, $lengthText = $Prefix.Split("/", 2)
   $prefixLength = [int]$lengthText
   $network = (ConvertTo-IPv4UInt $address) -band (Get-IPv4Mask $prefixLength)
-  if ($prefixLength -eq 0) {{
+  if ($prefixLength -eq 0) {
     $hostCount = [uint64]4294967296
-  }} else {{
+  } else {
     $hostCount = [uint64]1 -shl (32 - $prefixLength)
-  }}
-  [pscustomobject]@{{
+  }
+  [pscustomobject]@{
     Start = $network
     End = $network + $hostCount - 1
-  }}
-}}
+  }
+}
 
-function Test-IPv4PrefixOverlap {{
+function Test-IPv4PrefixOverlap {
   param([string]$LeftPrefix, [string]$RightPrefix)
   $left = Get-IPv4PrefixRange $LeftPrefix
   $right = Get-IPv4PrefixRange $RightPrefix
   ($left.Start -le $right.End) -and ($right.Start -le $left.End)
-}}
+}
 
-$outboundInterface = "{_ps_escape(outbound_interface)}"
-try {{
-  $externalAddresses = @(
-    Get-NetIPAddress -InterfaceAlias $outboundInterface -AddressFamily IPv4 -ErrorAction Stop |
-      Where-Object {{
+function Get-IPv4PrefixLength {
+  param([string]$Prefix)
+  if (-not $Prefix.Contains("/")) { return 32 }
+  return [int]($Prefix.Split("/", 2)[1])
+}
+
+function Get-PyNicNatStatePath {
+  Join-Path $env:ProgramData "py-nic-manager\nat-rules.json"
+}
+
+function Read-PyNicNatState {
+  $path = Get-PyNicNatStatePath
+  if (-not (Test-Path $path)) { return @() }
+  try {
+    $items = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    return @()
+  }
+  if ($null -eq $items) { return @() }
+  @($items)
+}
+
+function Write-PyNicNatState {
+  param([object[]]$Rules)
+  $path = Get-PyNicNatStatePath
+  New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
+  @($Rules) | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8
+}
+
+function Save-PyNicNatRule {
+  param(
+    [string]$Method,
+    [string]$InternalInterface,
+    [string]$ExternalPrefix
+  )
+  $existing = @(Read-PyNicNatState | Where-Object { [string]$_.name -ne $ruleName })
+  $existing += [pscustomobject]@{
+    name = $ruleName
+    source_cidr = $sourceCidr
+    outbound_interface = $outboundInterface
+    internal_interface = $InternalInterface
+    external_prefix = $ExternalPrefix
+    method = $Method
+    enabled = [bool]$ruleEnabled
+    persistent = [bool]$true
+    managed = [bool]$true
+    family = "ipv4"
+  }
+  Write-PyNicNatState $existing
+}
+
+function Start-ServiceIfPresent {
+  param([string]$Name)
+  try { Set-Service -Name $Name -StartupType Manual -ErrorAction SilentlyContinue } catch {}
+  $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+  if ($service -and $service.Status -ne "Running") {
+    try { Start-Service -Name $Name -ErrorAction Stop } catch {}
+  }
+}
+
+function Get-UsableIPv4Address {
+  param([string]$InterfaceAlias)
+  $addresses = @(
+    Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -ErrorAction Stop |
+      Where-Object {
         $_.IPAddress -and
         $_.IPAddress -notlike "169.254.*" -and
         $_.IPAddress -ne "127.0.0.1" -and
         [int]$_.PrefixLength -lt 32
-      }}
+      }
   )
-}} catch {{
-  Stop-PyNicManagerCommand ("Outbound interface '" + $outboundInterface + "' was not found or has no IPv4 configuration.")
-}}
-if (-not $externalAddresses) {{
-  Stop-PyNicManagerCommand ("Outbound interface '" + $outboundInterface + "' has no usable IPv4 address for Windows WinNAT.")
-}}
-$externalAddress = $externalAddresses |
-  Sort-Object `
-    @{{ Expression = {{ if ($_.AddressState -eq "Preferred") {{ 0 }} else {{ 1 }} }} }}, `
-    @{{ Expression = {{ if ($_.SkipAsSource) {{ 1 }} else {{ 0 }} }} }}, `
-    PrefixLength |
-  Select-Object -First 1
+  if (-not $addresses) { return $null }
+  $addresses |
+    Sort-Object `
+      @{ Expression = { if ($_.AddressState -eq "Preferred") { 0 } else { 1 } } }, `
+      @{ Expression = { if ($_.SkipAsSource) { 1 } else { 0 } } }, `
+      PrefixLength |
+    Select-Object -First 1
+}
+
+function Get-BestInternalInterface {
+  param([string]$SourcePrefix, [string]$OutboundInterface)
+  $candidates = @()
+  try {
+    $addresses = @(
+      Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object {
+          $_.InterfaceAlias -ne $OutboundInterface -and
+          $_.IPAddress -and
+          $_.IPAddress -ne "127.0.0.1" -and
+          $_.IPAddress -notlike "169.254.*" -and
+          [int]$_.PrefixLength -lt 32
+        }
+    )
+  } catch {
+    $addresses = @()
+  }
+  foreach ($address in $addresses) {
+    $prefix = ConvertTo-IPv4NetworkPrefix $address.IPAddress ([int]$address.PrefixLength)
+    if (Test-IPv4PrefixOverlap $SourcePrefix $prefix) {
+      $score = if ($prefix -eq $SourcePrefix) { 0 } else { 1 }
+      $candidates += [pscustomobject]@{
+        InterfaceAlias = [string]$address.InterfaceAlias
+        Prefix = $prefix
+        PrefixLength = [int]$address.PrefixLength
+        Score = $score
+      }
+    }
+  }
+  if ($candidates) {
+    return $candidates |
+      Sort-Object Score, @{ Expression = { -1 * $_.PrefixLength } }, InterfaceAlias |
+      Select-Object -First 1
+  }
+
+  try {
+    $routes = @(
+      Get-NetRoute -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object {
+          $_.InterfaceAlias -ne $OutboundInterface -and
+          $_.DestinationPrefix -and
+          $_.DestinationPrefix -ne "0.0.0.0/0" -and
+          $_.DestinationPrefix.Contains("/") -and
+          (Test-IPv4PrefixOverlap $SourcePrefix $_.DestinationPrefix)
+        }
+    )
+  } catch {
+    $routes = @()
+  }
+  if ($routes) {
+    $route = $routes |
+      Sort-Object @{ Expression = { -1 * (Get-IPv4PrefixLength $_.DestinationPrefix) } }, RouteMetric, InterfaceAlias |
+      Select-Object -First 1
+    return [pscustomobject]@{
+      InterfaceAlias = [string]$route.InterfaceAlias
+      Prefix = [string]$route.DestinationPrefix
+      PrefixLength = Get-IPv4PrefixLength $route.DestinationPrefix
+      Score = 2
+    }
+  }
+  $null
+}
+
+function Invoke-Netsh {
+  param(
+    [string[]]$Arguments,
+    [switch]$AllowFailure
+  )
+  $output = & netsh @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0 -and -not $AllowFailure) {
+    throw (($output | Out-String).Trim())
+  }
+  $output
+}
+
+function Invoke-RrasNat {
+  if (-not (Get-Command netsh.exe -ErrorAction SilentlyContinue)) {
+    throw "netsh.exe was not found."
+  }
+  Start-ServiceIfPresent "RemoteAccess"
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "install") -AllowFailure | Out-Null
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$outboundInterface") -AllowFailure | Out-Null
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$internalInterface") -AllowFailure | Out-Null
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "add", "interface", "name=$outboundInterface", "mode=full") | Out-Null
+  Invoke-Netsh -Arguments @("routing", "ip", "nat", "add", "interface", "name=$internalInterface", "mode=private") | Out-Null
+  "RRAS"
+}
+
+function Get-IcsConnection {
+  param($Manager, [string]$Name)
+  foreach ($connection in @($Manager.EnumEveryConnection())) {
+    $props = $Manager.NetConnectionProps($connection)
+    if ([string]$props.Name -eq $Name) {
+      return [pscustomobject]@{
+        Connection = $connection
+        Properties = $props
+        Config = $Manager.INetSharingConfigurationForINetConnection($connection)
+      }
+    }
+  }
+  $null
+}
+
+function Invoke-IcsNat {
+  Start-ServiceIfPresent "SharedAccess"
+  $manager = New-Object -ComObject HNetCfg.HNetShare
+  $public = Get-IcsConnection $manager $outboundInterface
+  if (-not $public) {
+    throw "ICS could not find outbound interface '$outboundInterface'."
+  }
+  $private = Get-IcsConnection $manager $internalInterface
+  if (-not $private) {
+    throw "ICS could not find internal interface '$internalInterface'."
+  }
+
+  foreach ($connection in @($manager.EnumEveryConnection())) {
+    $props = $manager.NetConnectionProps($connection)
+    $config = $manager.INetSharingConfigurationForINetConnection($connection)
+    if ($config.SharingEnabled) {
+      $sharingType = [int]$config.SharingConnectionType
+      if ($sharingType -eq 0 -or [string]$props.Name -eq $outboundInterface -or [string]$props.Name -eq $internalInterface) {
+        $config.DisableSharing() | Out-Null
+        Start-Sleep -Milliseconds 300
+      }
+    }
+  }
+
+  $public = Get-IcsConnection $manager $outboundInterface
+  $private = Get-IcsConnection $manager $internalInterface
+  $public.Config.EnableSharing(0) | Out-Null
+  Start-Sleep -Milliseconds 500
+  $private.Config.EnableSharing(1) | Out-Null
+  "ICS"
+}
+
+$ruleName = "__PY_NIC_RULE_NAME__"
+$sourceCidr = "__PY_NIC_SOURCE_CIDR__"
+$outboundInterface = "__PY_NIC_OUTBOUND_INTERFACE__"
+$ruleEnabled = __PY_NIC_RULE_ENABLED__
+
+try {
+  $externalAddress = Get-UsableIPv4Address $outboundInterface
+} catch {
+  Stop-PyNicManagerCommand ("Outbound interface '$outboundInterface' was not found or has no IPv4 configuration.")
+}
+if (-not $externalAddress) {
+  Stop-PyNicManagerCommand ("Outbound interface '$outboundInterface' has no usable IPv4 address for Windows RRAS/ICS NAT.")
+}
 $externalPrefix = ConvertTo-IPv4NetworkPrefix $externalAddress.IPAddress ([int]$externalAddress.PrefixLength)
-if (Test-IPv4PrefixOverlap "{_ps_escape(source)}" $externalPrefix) {{
-  Stop-PyNicManagerCommand ("NAT source CIDR '{_ps_escape(source)}' overlaps outbound interface '" + $outboundInterface + "' prefix '" + $externalPrefix + "'. Choose the internal network behind this host, not the outbound interface's own LAN.")
-}}
-Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue |
-  Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
-try {{
-  New-NetNat `
-    -Name "{_ps_escape(name)}" `
-    -InternalIPInterfaceAddressPrefix "{_ps_escape(source)}" `
-    -ExternalIPInterfaceAddressPrefix $externalPrefix `
-    -ErrorAction Stop
-}} catch {{
-  Stop-PyNicManagerCommand ("Failed to create Windows WinNAT rule '{_ps_escape(name)}' from source CIDR '{_ps_escape(source)}' through outbound interface '" + $outboundInterface + "' (external prefix '" + $externalPrefix + "'). " + $_.Exception.Message)
-}}
-"""
+if (Test-IPv4PrefixOverlap $sourceCidr $externalPrefix) {
+  Stop-PyNicManagerCommand ("NAT source CIDR '$sourceCidr' overlaps outbound interface '$outboundInterface' prefix '$externalPrefix'. Choose the internal network behind this host, not the outbound interface's own LAN.")
+}
+
+$internalCandidate = Get-BestInternalInterface $sourceCidr $outboundInterface
+if (-not $internalCandidate) {
+  Stop-PyNicManagerCommand ("No internal interface was found for source CIDR '$sourceCidr'. Assign an IPv4 address from that CIDR to the inside adapter, or add a route for that CIDR, then try again.")
+}
+$internalInterface = [string]$internalCandidate.InterfaceAlias
+if ($internalInterface -eq $outboundInterface) {
+  Stop-PyNicManagerCommand ("Internal and outbound interface both resolved to '$outboundInterface'. Pick a different source CIDR or outbound interface.")
+}
+
+if (-not $ruleEnabled) {
+  Save-PyNicNatRule "disabled" $internalInterface $externalPrefix
+  exit 0
+}
+
+$errors = @()
+$method = ""
+try {
+  $method = Invoke-RrasNat
+} catch {
+  $errors += ("RRAS: " + $_.Exception.Message)
+}
+if (-not $method) {
+  try {
+    $method = Invoke-IcsNat
+  } catch {
+    $errors += ("ICS: " + $_.Exception.Message)
+  }
+}
+if (-not $method) {
+  Stop-PyNicManagerCommand ("Failed to create Windows RRAS/ICS NAT rule '$ruleName' from source CIDR '$sourceCidr' through outbound interface '$outboundInterface' using internal interface '$internalInterface'. " + ($errors -join " | "))
+}
+
+Save-PyNicNatRule $method $internalInterface $externalPrefix
+'''
+            .replace("__PY_NIC_RULE_NAME__", _ps_escape(name))
+            .replace("__PY_NIC_SOURCE_CIDR__", _ps_escape(source))
+            .replace("__PY_NIC_OUTBOUND_INTERFACE__", _ps_escape(outbound_interface))
+            .replace("__PY_NIC_RULE_ENABLED__", "$true" if rule.enabled else "$false")
+        )
         notes = [
-            "Windows WinNAT rules are persistent.",
-            f'Py NIC Manager resolves outbound interface "{outbound_interface}" to its IPv4 external prefix before creating the WinNAT rule.',
+            "Windows NAT uses RRAS when available and falls back to Internet Connection Sharing (ICS).",
+            f'Py NIC Manager uses "{outbound_interface}" as the public/outbound interface and infers the private/internal interface from {source}.',
+            "Windows ICS/RRAS settings are persistent after the command succeeds.",
+            "Windows ICS allows one public shared interface at a time; applying an ICS-backed rule may replace another ICS sharing setup.",
         ]
         if not rule.enabled:
-            notes.append("WinNAT does not support disabled stored NAT rules; this rule will be created enabled.")
+            notes.append("The disabled NAT rule will be stored but not applied until it is enabled.")
         return OperationPlan("Create NAT rule", [_powershell(script)], notes)
 
     def plan_nat_delete(self, rule: NatRule) -> OperationPlan:
         name = rule.name.strip()
         if not name:
             raise BackendError("A NAT rule name is required.")
-        script = f'Get-NetNat -Name "{_ps_escape(name)}" -ErrorAction SilentlyContinue | Remove-NetNat -Confirm:$false'
+        script = (
+            r'''
+function Stop-PyNicManagerCommand {
+  param([string]$Message)
+  [Console]::Error.WriteLine($Message)
+  exit 1
+}
+
+function Get-PyNicNatStatePath {
+  Join-Path $env:ProgramData "py-nic-manager\nat-rules.json"
+}
+
+function Read-PyNicNatState {
+  $path = Get-PyNicNatStatePath
+  if (-not (Test-Path $path)) { return @() }
+  try {
+    $items = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    return @()
+  }
+  if ($null -eq $items) { return @() }
+  @($items)
+}
+
+function Write-PyNicNatState {
+  param([object[]]$Rules)
+  $path = Get-PyNicNatStatePath
+  New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
+  @($Rules) | ConvertTo-Json -Depth 8 | Set-Content -Path $path -Encoding UTF8
+}
+
+function Invoke-Netsh {
+  param([string[]]$Arguments)
+  & netsh @Arguments 2>&1 | Out-Null
+}
+
+function Disable-IcsForInterface {
+  param([string]$InterfaceName)
+  try {
+    $manager = New-Object -ComObject HNetCfg.HNetShare
+    foreach ($connection in @($manager.EnumEveryConnection())) {
+      $props = $manager.NetConnectionProps($connection)
+      if ([string]$props.Name -eq $InterfaceName) {
+        $config = $manager.INetSharingConfigurationForINetConnection($connection)
+        if ($config.SharingEnabled) {
+          $config.DisableSharing() | Out-Null
+        }
+      }
+    }
+  } catch {}
+}
+
+$ruleName = "__PY_NIC_RULE_NAME__"
+$rules = @(Read-PyNicNatState)
+$target = $rules | Where-Object { [string]$_.name -eq $ruleName } | Select-Object -First 1
+if ($target) {
+  $outboundInterface = [string]$target.outbound_interface
+  $internalInterface = [string]$target.internal_interface
+  if ($outboundInterface) {
+    Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$outboundInterface")
+    Disable-IcsForInterface $outboundInterface
+  }
+  if ($internalInterface) {
+    Invoke-Netsh -Arguments @("routing", "ip", "nat", "delete", "interface", "name=$internalInterface")
+    Disable-IcsForInterface $internalInterface
+  }
+}
+$remaining = @($rules | Where-Object { [string]$_.name -ne $ruleName })
+Write-PyNicNatState $remaining
+'''
+            .replace("__PY_NIC_RULE_NAME__", _ps_escape(name))
+        )
         return OperationPlan("Delete NAT rule", [_powershell(script)])
 
 
@@ -1560,14 +1947,14 @@ def _validate_nat_source(value: str) -> str:
 def _validate_windows_nat_source(value: str) -> str:
     network = _parse_nat_network(value)
     if network.version != 4:
-        raise BackendError("Windows WinNAT supports IPv4 source CIDRs only.")
+        raise BackendError("Windows NAT supports IPv4 source CIDRs only.")
     if network.prefixlen == 0:
         raise BackendError(
-            "Windows WinNAT source CIDR must be the internal network to translate, "
+            "Windows NAT source CIDR must be the internal network to translate, "
             "not 0.0.0.0/0. Use a private/LAN prefix such as 192.168.0.0/16."
         )
     if network.network_address.is_loopback or network.network_address.is_multicast:
-        raise BackendError("Windows WinNAT source CIDR must be a usable internal IPv4 network.")
+        raise BackendError("Windows NAT source CIDR must be a usable internal IPv4 network.")
     return str(network)
 
 
