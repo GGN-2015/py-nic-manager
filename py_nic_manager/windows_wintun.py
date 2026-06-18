@@ -209,29 +209,85 @@ def _configure_address(name: str, address: str) -> None:
     if "/" not in address:
         raise RuntimeError("Virtual NIC address must use CIDR notation, for example 192.168.50.1/24.")
     ip, prefix = address.split("/", 1)
-    netmask = _prefix_to_netmask(int(prefix))
-    _run(["netsh", "interface", "ip", "set", "address", f"name={name}", "static", ip, netmask])
-    _run(["netsh", "interface", "set", "interface", f"name={name}", "admin=enabled"])
+    prefix_length = int(prefix)
+    if not 0 <= prefix_length <= 32:
+        raise RuntimeError("Virtual NIC IPv4 prefix length must be between 0 and 32.")
+    adapter = _wait_for_adapter(name, timeout=45)
+    adapter_name = str(adapter.get("Name") or name)
+    interface_index = int(adapter.get("InterfaceIndex") or 0)
+    if interface_index <= 0:
+        raise RuntimeError(f"Wintun adapter '{name}' does not have a usable interface index yet.")
+    script = f"""
+$ErrorActionPreference = "Stop"
+$interfaceIndex = {interface_index}
+$adapterName = "{_ps_escape(adapter_name)}"
+$ipAddress = "{_ps_escape(ip)}"
+$prefixLength = {prefix_length}
+$lastError = ""
+for ($attempt = 0; $attempt -lt 24; $attempt++) {{
+  try {{
+    $adapter = Get-NetAdapter -IncludeHidden -InterfaceIndex $interfaceIndex -ErrorAction Stop
+    Enable-NetAdapter -InputObject $adapter -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    Start-Sleep -Milliseconds 250
+    Set-NetIPInterface -InterfaceIndex $interfaceIndex -AddressFamily IPv4 -Dhcp Disabled -ErrorAction SilentlyContinue | Out-Null
+    Get-NetIPAddress -InterfaceIndex $interfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.PrefixOrigin -ne "WellKnown" -and ($_.IPAddress -ne $ipAddress -or [int]$_.PrefixLength -ne $prefixLength) }} |
+      Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    $existing = Get-NetIPAddress -InterfaceIndex $interfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.IPAddress -eq $ipAddress -and [int]$_.PrefixLength -eq $prefixLength }} |
+      Select-Object -First 1
+    if (-not $existing) {{
+      New-NetIPAddress -InterfaceIndex $interfaceIndex -IPAddress $ipAddress -PrefixLength $prefixLength -ErrorAction Stop | Out-Null
+    }}
+    exit 0
+  }} catch {{
+    $lastError = $_.Exception.Message
+    Start-Sleep -Milliseconds 750
+  }}
+}}
+[Console]::Error.WriteLine("Failed to configure IPv4 address {ip}/{prefix_length} on Wintun adapter '{_ps_escape(adapter_name)}' (interface index {interface_index}): $lastError")
+exit 1
+"""
+    _run_powershell(script)
 
 
 def _set_interface_up(name: str) -> None:
     try:
-        _run(["netsh", "interface", "set", "interface", f"name={name}", "admin=enabled"])
+        adapter = _wait_for_adapter(name, timeout=15)
+        interface_index = int(adapter.get("InterfaceIndex") or 0)
+        if interface_index <= 0:
+            return
+        script = f"""
+$adapter = Get-NetAdapter -IncludeHidden -InterfaceIndex {interface_index} -ErrorAction SilentlyContinue
+if ($adapter) {{
+  Enable-NetAdapter -InputObject $adapter -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+}}
+"""
+        _run_powershell(script)
     except RuntimeError:
         pass
 
 
 def _adapter_exists(name: str) -> bool:
-    return any(str(item.get("Name", "")) == name for item in _net_adapters())
+    return _adapter_info(name) is not None
 
 
-def _wait_for_adapter(name: str, timeout: int) -> None:
+def _wait_for_adapter(name: str, timeout: int) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _adapter_exists(name):
-            return
+        adapter = _adapter_info(name)
+        if adapter:
+            return adapter
         time.sleep(1)
     raise RuntimeError(f"Wintun adapter '{name}' did not appear after creation.")
+
+
+def _adapter_info(name: str) -> dict[str, object] | None:
+    clean_name = name.lower()
+    for item in _net_adapters():
+        if str(item.get("Name", "")).lower() == clean_name:
+            return item
+    return None
 
 
 def _net_adapters() -> list[dict[str, object]]:

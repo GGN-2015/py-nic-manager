@@ -19,6 +19,7 @@ from py_nic_manager.backends import (
 from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
+from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
 from py_nic_manager.models import (
     AdapterInfo,
@@ -566,6 +567,26 @@ def test_windows_virtual_adapter_plan_uses_bundled_wintun_helper() -> None:
     assert "192.168.56.1/24" in plan.commands[0]
     assert "wintun.dll" in " ".join(plan.notes)
     assert delete_plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_wintun", "delete"]
+
+
+def test_windows_wintun_configures_address_by_interface_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts: list[str] = []
+
+    monkeypatch.setattr(
+        windows_wintun,
+        "_wait_for_adapter",
+        lambda name, timeout: {"Name": name, "InterfaceIndex": 42},
+    )
+    monkeypatch.setattr(windows_wintun, "_run_powershell", lambda script: scripts.append(script) or "")
+
+    windows_wintun._configure_address("py-virtual0", "192.168.56.1/24")
+
+    assert len(scripts) == 1
+    script = scripts[0]
+    assert "$interfaceIndex = 42" in script
+    assert "Set-NetIPInterface -InterfaceIndex $interfaceIndex" in script
+    assert "New-NetIPAddress -InterfaceIndex $interfaceIndex" in script
+    assert "netsh" not in script.lower()
 
 
 def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:
