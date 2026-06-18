@@ -19,7 +19,7 @@ from py_nic_manager.backends import (
 from py_nic_manager.api import NetworkManager, PrivilegeError, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
-from py_nic_manager import windows_device_policy, windows_loopback
+from py_nic_manager import windows_device_policy, windows_loopback, windows_tap, windows_virtual
 from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
 from py_nic_manager.models import (
@@ -604,19 +604,61 @@ def test_linux_nat_plan_uses_persistent_helper_without_restart() -> None:
     assert "--outbound-interface" in plan.commands[0]
 
 
-def test_windows_virtual_adapter_plan_uses_bundled_wintun_helper() -> None:
+def test_windows_virtual_adapter_plan_uses_tap_first_helper() -> None:
     backend = WindowsBackend(dry_run=True)
 
     plan = backend.plan_virtual_adapter_create("py-virtual0", AddressInfo("192.168.56.1", 24))
     delete_plan = backend.plan_virtual_adapter_delete(VirtualAdapterInfo("py-virtual0", "wintun"))
 
-    assert plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_wintun", "create"]
+    assert plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_virtual", "create"]
     assert "--name" in plan.commands[0]
     assert "py-virtual0" in plan.commands[0]
     assert "--address" in plan.commands[0]
     assert "192.168.56.1/24" in plan.commands[0]
-    assert "wintun.dll" in " ".join(plan.notes)
-    assert delete_plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_wintun", "delete"]
+    assert "TAP-Windows6" in " ".join(plan.notes)
+    assert "Wintun" in " ".join(plan.notes)
+    assert delete_plan.commands[0][:4] == [sys.executable, "-m", "py_nic_manager.windows_virtual", "delete"]
+
+
+def test_windows_virtual_helper_prefers_tap_and_falls_back_to_wintun(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        windows_virtual.windows_tap,
+        "create_virtual_adapter",
+        lambda name, address: calls.append(("tap", address)),
+    )
+    monkeypatch.setattr(
+        windows_virtual.windows_wintun,
+        "create_virtual_adapter",
+        lambda name, address: calls.append(("wintun", address)),
+    )
+
+    windows_virtual.create_virtual_adapter("py-virtual0", "192.168.56.1/24")
+
+    assert calls == [("tap", "192.168.56.1/24")]
+
+    calls.clear()
+    monkeypatch.setattr(
+        windows_virtual.windows_tap,
+        "create_virtual_adapter",
+        lambda name, address: (_ for _ in ()).throw(RuntimeError("tap failed")),
+    )
+
+    windows_virtual.create_virtual_adapter("py-virtual0", "192.168.56.1/24")
+
+    assert calls == [("wintun", "192.168.56.1/24")]
+
+
+def test_tap_driver_assets_are_bundled_for_windows_ics() -> None:
+    for arch in ("amd64", "arm64", "i386"):
+        driver_dir = Path("py_nic_manager") / "assets" / "tap-windows6" / "dist.win10" / arch
+        assert (driver_dir / "OemVista.inf").exists()
+        assert (driver_dir / "tap0901.sys").exists()
+        assert (driver_dir / "tap0901.cat").exists()
+        assert (driver_dir / "devcon.exe").exists()
+    assert windows_tap.HARDWARE_ID == r"root\tap0901"
+    assert (Path("py_nic_manager") / "assets" / "tap-windows6" / "COPYRIGHT.GPL").exists()
 
 
 def test_windows_wintun_configures_address_by_interface_index(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -724,6 +766,18 @@ def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.Mo
     assert "--stop-file" in popen_commands[0]
     assert str(tmp_path) in popen_commands[0][popen_commands[0].index("--stop-file") + 1]
     assert saved_states[0]["stop_path"]
+
+
+def test_windows_wintun_virtual_item_marks_ics_incompatible() -> None:
+    item = windows_wintun._virtual_item(
+        "py-virtual0",
+        {"Name": "py-virtual0", "Status": "Up", "PnPDeviceID": r"ROOT\\NET\\0001"},
+        {"address": "192.168.56.1/24"},
+    )
+
+    assert item["nat_capable"] is False
+    assert item["ics_compatible"] is False
+    assert "TUN" in item["ics_note"]
 
 
 def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:

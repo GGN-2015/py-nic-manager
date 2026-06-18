@@ -132,25 +132,27 @@ Creating a Microsoft KM-TEST Loopback Adapter uses the built-in
 `%WINDIR%\inf\netloop.inf` driver directly. It does not require `devcon.exe` or
 the Windows Driver Kit.
 
-Windows loopback and Wintun virtual NIC creation both target the Windows
+Windows loopback, TAP, and Wintun virtual NIC creation target the Windows
 Net/NDIS adapter class. Before creating either adapter type, Py NIC Manager
 updates the local Device Installation Restrictions policy to allow administrator
 installation, enable layered allow/deny evaluation, allow the Net setup class
 `{4d36e972-e325-11ce-bfc1-08002be10318}`, and remove local deny entries that
-explicitly match Py NIC Manager's loopback/Wintun device IDs. If a domain or MDM
+explicitly match Py NIC Manager's loopback/TAP/Wintun device IDs. If a domain or MDM
 policy later reapplies a deny rule, Windows may still block installation; in
 that case the helper reports a policy-specific error instead of hiding it.
 
-Non-loopback virtual NIC creation uses Wintun. Py NIC Manager bundles the
-official platform-specific `wintun.dll` files from Wintun 0.14.1 under
-`py_nic_manager/assets/wintun/` so users do not need to install the Windows
-Driver Kit, Hyper-V, or WinNAT. The bundled Wintun binaries keep their own
-WireGuard LLC prebuilt-binaries license in
-`py_nic_manager/assets/wintun/LICENSE.txt`; they are not relicensed as MIT.
-The helper creates a Wintun adapter, configures the requested IPv4 CIDR, starts
-a background keeper process that holds the adapter handle, and registers a
-startup task so the virtual NIC and its address are restored after reboot.
-Use the virtual NIC's source CIDR as the NAT internal network.
+Non-loopback virtual NIC creation tries bundled OpenVPN TAP-Windows6 9.27.0
+first. TAP is an Ethernet-like NDIS adapter and is more likely to be accepted by
+Windows Internet Connection Sharing as the private/shared interface. If TAP
+creation fails, Py NIC Manager falls back to bundled Wintun 0.14.1. Wintun is a
+layer-3 TUN adapter and is marked as not ICS-compatible because Windows ICS
+often rejects it as the private/shared interface. TAP assets keep their GPLv2
+license in `py_nic_manager/assets/tap-windows6/COPYRIGHT.GPL`; Wintun binaries
+keep their WireGuard LLC prebuilt-binaries license in
+`py_nic_manager/assets/wintun/LICENSE.txt`.
+Use the virtual NIC's source CIDR as the NAT internal network. The adapter list
+shows an "ICS Compatible" column so the selected internal interface is not a
+guess.
 
 Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
 `Set-NetIPInterface -Forwarding`.

@@ -84,6 +84,8 @@ class AdapterInfo:
     is_virtual: bool = False
     virtual_kind: str = ""
     forwarding_enabled: bool | None = None
+    ics_compatible: bool | None = None
+    ics_note: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AdapterInfo":
@@ -105,6 +107,8 @@ class AdapterInfo:
             is_virtual=bool(data.get("is_virtual", False)),
             virtual_kind=str(data.get("virtual_kind", "")),
             forwarding_enabled=_optional_bool(data.get("forwarding_enabled")),
+            ics_compatible=_optional_bool(data.get("ics_compatible")),
+            ics_note=str(data.get("ics_note", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,6 +126,8 @@ class AdapterInfo:
             "is_virtual": self.is_virtual,
             "virtual_kind": self.virtual_kind,
             "forwarding_enabled": self.forwarding_enabled,
+            "ics_compatible": self.ics_compatible,
+            "ics_note": self.ics_note,
         }
 
 
@@ -136,6 +142,8 @@ class VirtualAdapterInfo:
     persistent: bool = True
     managed: bool = True
     backend_id: str = ""
+    ics_compatible: bool | None = None
+    ics_note: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VirtualAdapterInfo":
@@ -149,6 +157,8 @@ class VirtualAdapterInfo:
             persistent=bool(_optional_bool(data.get("persistent")) if data.get("persistent") is not None else True),
             managed=bool(_optional_bool(data.get("managed")) if data.get("managed") is not None else True),
             backend_id=str(data.get("backend_id", "")),
+            ics_compatible=_optional_bool(data.get("ics_compatible")),
+            ics_note=str(data.get("ics_note", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -162,6 +172,8 @@ class VirtualAdapterInfo:
             "persistent": self.persistent,
             "managed": self.managed,
             "backend_id": self.backend_id,
+            "ics_compatible": self.ics_compatible,
+            "ics_note": self.ics_note,
         }
 
 

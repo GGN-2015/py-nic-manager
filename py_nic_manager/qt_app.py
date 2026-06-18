@@ -254,9 +254,9 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self.adapter_table = QTableWidget(0, 9)
+        self.adapter_table = QTableWidget(0, 10)
         self.adapter_table.setHorizontalHeaderLabels(
-            ["Adapter", "Index", "Status", "IP Forwarding", "IPv4", "MAC", "Gateway", "DNS", "Type"]
+            ["Adapter", "Index", "Status", "IP Forwarding", "ICS Compatible", "IPv4", "MAC", "Gateway", "DNS", "Type"]
         )
         self._configure_table(self.adapter_table)
         self.adapter_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
@@ -264,11 +264,12 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_table.setColumnWidth(1, 70)
         self.adapter_table.setColumnWidth(2, 90)
         self.adapter_table.setColumnWidth(3, 115)
-        self.adapter_table.setColumnWidth(4, 170)
-        self.adapter_table.setColumnWidth(5, 145)
-        self.adapter_table.setColumnWidth(6, 140)
-        self.adapter_table.setColumnWidth(7, 210)
-        self.adapter_table.setColumnWidth(8, 95)
+        self.adapter_table.setColumnWidth(4, 120)
+        self.adapter_table.setColumnWidth(5, 170)
+        self.adapter_table.setColumnWidth(6, 145)
+        self.adapter_table.setColumnWidth(7, 140)
+        self.adapter_table.setColumnWidth(8, 210)
+        self.adapter_table.setColumnWidth(9, 95)
         self.adapter_table.itemSelectionChanged.connect(self._on_adapter_select)
         splitter.addWidget(self.adapter_table)
 
@@ -636,13 +637,14 @@ class NetworkManagerQtWindow(QMainWindow):
                 str(row),
                 adapter.status,
                 _format_forwarding(adapter.forwarding_enabled),
+                _format_ics_compatible(adapter),
                 _format_address(ipv4),
                 adapter.mac,
                 ", ".join(adapter.gateways),
                 ", ".join(adapter.dns_servers),
                 _adapter_kind(adapter),
             ]
-            sort_columns = ["name", "index", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind"]
+            sort_columns = ["name", "index", "status", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"]
             for column, value in enumerate(values):
                 item = _table_item(
                     value,
@@ -1228,6 +1230,8 @@ class NetworkManagerQtWindow(QMainWindow):
                 address=address,
                 source_cidr=_source_cidr_from_text(address),
                 backend_id=selected_adapter.id,
+                ics_compatible=selected_adapter.ics_compatible,
+                ics_note=selected_adapter.ics_note,
             )
         return None
 
@@ -1336,6 +1340,14 @@ def _format_forwarding(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"
+
+
+def _format_ics_compatible(adapter: AdapterInfo) -> str:
+    if adapter.ics_compatible is True:
+        return "Yes"
+    if adapter.ics_compatible is False:
+        return "No"
+    return "Unknown" if adapter.is_virtual or adapter.is_loopback else "N/A"
 
 
 def _format_bool(value: bool) -> str:

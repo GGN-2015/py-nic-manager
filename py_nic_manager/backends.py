@@ -334,6 +334,19 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
   if ($adapter.InterfaceDescription -match "Wintun|WireGuard") { $virtualKind = "wintun" }
   elseif ($adapter.InterfaceDescription -match "TAP") { $virtualKind = "tap" }
   elseif ($adapter.InterfaceDescription -match "Virtual|VPN") { $virtualKind = "virtual" }
+  $isLoopback = [bool]($adapter.InterfaceDescription -match "Loopback|KM-TEST|Npcap Loopback")
+  $icsCompatible = $null
+  $icsNote = ""
+  if ($isLoopback) {
+    $icsCompatible = $false
+    $icsNote = "Windows ICS does not support loopback adapters as the private/shared interface."
+  } elseif ($virtualKind -eq "tap") {
+    $icsCompatible = $true
+    $icsNote = "TAP-Windows6 is Ethernet-like and preferred for Windows ICS private sharing."
+  } elseif ($virtualKind -eq "wintun") {
+    $icsCompatible = $false
+    $icsNote = "Wintun is a layer-3 TUN adapter; Windows ICS often rejects it as a private/shared interface."
+  }
   [pscustomobject]@{
     id = [string]$adapter.PnPDeviceID
     name = [string]$adapter.Name
@@ -341,10 +354,12 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     mac = [string]$adapter.MacAddress
     status = [string]$adapter.Status
     dhcp_enabled = [bool]($config.NetIPv4Interface.Dhcp -eq "Enabled")
-    is_loopback = [bool]($adapter.InterfaceDescription -match "Loopback|KM-TEST|Npcap Loopback")
+    is_loopback = $isLoopback
     forwarding_enabled = [bool]($ipInterface.Forwarding -eq "Enabled")
     is_virtual = $isVirtual
     virtual_kind = $virtualKind
+    ics_compatible = $icsCompatible
+    ics_note = $icsNote
     addresses = @($config.IPv4Address | ForEach-Object {
       [pscustomobject]@{
         address = [string]$_.IPAddress
@@ -363,7 +378,7 @@ $adapters | ConvertTo-Json -Depth 6
 
     def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
         try:
-            data = self.run_json([sys.executable, "-m", "py_nic_manager.windows_wintun", "list"])
+            data = self.run_json([sys.executable, "-m", "py_nic_manager.windows_virtual", "list"])
         except BackendError:
             return []
         return [VirtualAdapterInfo.from_dict(item) for item in _as_list(data)]
@@ -638,7 +653,7 @@ if ($device) {{
             [[
                 sys.executable,
                 "-m",
-                "py_nic_manager.windows_wintun",
+                "py_nic_manager.windows_virtual",
                 "create",
                 "--name",
                 clean_name,
@@ -646,9 +661,10 @@ if ($device) {{
                 cidr,
             ]],
             [
-                "Windows creates a non-loopback Wintun virtual adapter using the wintun.dll bundled with Py NIC Manager.",
+                "Windows creates a non-loopback virtual NIC using bundled TAP-Windows6 first, then Wintun as a fallback.",
                 "Before creation, Py NIC Manager allows the Windows Net/NDIS setup class in local device installation policy.",
-                "The helper keeps the adapter alive with a background process and registers a startup task for persistence.",
+                "TAP-Windows6 is preferred because it is Ethernet-like and more likely to work as a Windows ICS private interface.",
+                "If TAP creation fails, the Wintun fallback is created but marked as not ICS-compatible.",
                 "Use the virtual adapter's source CIDR as the NAT internal network.",
             ],
         )
@@ -657,8 +673,8 @@ if ($device) {{
         clean_name = _validate_virtual_adapter_name(adapter.name)
         return OperationPlan(
             "Delete virtual adapter",
-            [[sys.executable, "-m", "py_nic_manager.windows_wintun", "delete", "--name", clean_name]],
-            ["The Wintun keeper process and startup task for this adapter will be removed."],
+            [[sys.executable, "-m", "py_nic_manager.windows_virtual", "delete", "--name", clean_name]],
+            ["The managed TAP adapter or Wintun fallback adapter for this virtual NIC will be removed."],
         )
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
@@ -879,12 +895,16 @@ function Get-BestInternalInterface {
       $score = if ($prefix -eq $SourcePrefix) { 0 } else { 1 }
       $adapter = Get-NetAdapter -InterfaceIndex $address.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue
       $isLoopback = [bool]($adapter.InterfaceDescription -match "Loopback|KM-TEST|Npcap Loopback")
+      $kind = ""
+      if ($adapter.InterfaceDescription -match "TAP") { $kind = "tap" }
+      elseif ($adapter.InterfaceDescription -match "Wintun|WireGuard") { $kind = "wintun" }
       $candidates += [pscustomobject]@{
         InterfaceAlias = [string]$address.InterfaceAlias
         Prefix = $prefix
         PrefixLength = [int]$address.PrefixLength
         Score = $score
         IsLoopback = $isLoopback
+        Kind = $kind
       }
     }
   }
@@ -912,12 +932,17 @@ function Get-BestInternalInterface {
     $route = $routes |
       Sort-Object @{ Expression = { -1 * (Get-IPv4PrefixLength $_.DestinationPrefix) } }, RouteMetric, InterfaceAlias |
       Select-Object -First 1
+    $adapter = Get-NetAdapter -InterfaceAlias $route.InterfaceAlias -IncludeHidden -ErrorAction SilentlyContinue
+    $kind = ""
+    if ($adapter.InterfaceDescription -match "TAP") { $kind = "tap" }
+    elseif ($adapter.InterfaceDescription -match "Wintun|WireGuard") { $kind = "wintun" }
     return [pscustomobject]@{
       InterfaceAlias = [string]$route.InterfaceAlias
       Prefix = [string]$route.DestinationPrefix
       PrefixLength = Get-IPv4PrefixLength $route.DestinationPrefix
       Score = 2
       IsLoopback = [bool]($route.InterfaceAlias -match "Loopback|KM-TEST|Npcap Loopback")
+      Kind = $kind
     }
   }
   $null
@@ -1093,6 +1118,8 @@ try {
 if (-not $method) {
   if ([bool]$internalCandidate.IsLoopback) {
     $errors += ("ICS: Windows ICS cannot use loopback adapter '$internalInterface' as the private/shared interface. Use a real private adapter for '$sourceCidr', or configure RRAS NAT on a Windows edition where RRAS is available.")
+  } elseif ([string]$internalCandidate.Kind -eq "wintun") {
+    $errors += ("ICS: Internal interface '$internalInterface' is a Wintun/TUN adapter. Windows ICS commonly rejects TUN adapters as private/shared interfaces. Create a TAP-backed virtual NIC with Py NIC Manager and use that TAP CIDR instead.")
   } else {
     try {
       $method = Invoke-IcsNat

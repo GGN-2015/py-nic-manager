@@ -17,7 +17,7 @@ def ensure_ndis_device_install_policy() -> None:
 $ErrorActionPreference = "Stop"
 $base = "{DEVICE_INSTALL_RESTRICTIONS}"
 $netClass = "{NET_SETUP_CLASS_GUID}"
-$deviceIds = @("*MSLOOP", "ROOT\MSLOOP", "ROOT\NET", "WINTUN", "WireGuard")
+$deviceIds = @("*MSLOOP", "ROOT\MSLOOP", "ROOT\NET", "ROOT\TAP0901", "TAP0901", "WINTUN", "WireGuard")
 
 function Ensure-Key {{
   param([string]$Path)
@@ -74,9 +74,11 @@ Remove-MatchingPolicyStrings $denyClasses {{ param($value) $value -ieq $netClass
 Remove-MatchingPolicyStrings $denyDeviceIds {{
   param($value)
   $upper = $value.ToUpperInvariant()
-  $upper -eq "*MSLOOP" -or
+    $upper -eq "*MSLOOP" -or
     $upper -eq "ROOT\MSLOOP" -or
     $upper -eq "ROOT\NET" -or
+    $upper -eq "ROOT\TAP0901" -or
+    $upper -eq "TAP0901" -or
     $upper -like "*WINTUN*" -or
     $upper -like "*WIREGUARD*"
 }}
@@ -92,6 +94,8 @@ $remainingDeviceDeny = @(
       $upper -eq "*MSLOOP" -or
         $upper -eq "ROOT\MSLOOP" -or
         $upper -eq "ROOT\NET" -or
+        $upper -eq "ROOT\TAP0901" -or
+        $upper -eq "TAP0901" -or
         $upper -like "*WINTUN*" -or
         $upper -like "*WIREGUARD*"
     }}

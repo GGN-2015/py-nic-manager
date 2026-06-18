@@ -193,10 +193,12 @@ def _virtual_item(name: str, adapter: dict[str, object] | None, state: dict[str,
         "status": str(adapter.get("Status", "")) if adapter else "Missing",
         "address": address,
         "source_cidr": source_cidr,
-        "nat_capable": True,
+        "nat_capable": False,
         "persistent": True,
         "managed": bool(state),
         "backend_id": str(adapter.get("PnPDeviceID", "")) if adapter else "",
+        "ics_compatible": False,
+        "ics_note": "Wintun is a layer-3 TUN adapter. Windows ICS often rejects it as a private/shared interface.",
     }
 
 

@@ -177,7 +177,7 @@ class NetworkManagerApp(tk.Tk):
     def _build_adapters_tab(self) -> None:
         self.adapters_paned, table_frame, panel = self._build_split_tab(self.adapters_tab)
 
-        columns = ("index", "status", "forwarding", "ipv4", "mac", "gateway", "dns", "kind")
+        columns = ("index", "status", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind")
         self.adapter_tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -188,6 +188,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("index", "Index", "index")
         self._set_adapter_heading("status", "Status", "status")
         self._set_adapter_heading("forwarding", "IP Forwarding", "forwarding")
+        self._set_adapter_heading("ics", "ICS Compatible", "ics")
         self._set_adapter_heading("ipv4", "IPv4", "ipv4")
         self._set_adapter_heading("mac", "MAC", "mac")
         self._set_adapter_heading("gateway", "Gateway", "gateway")
@@ -197,6 +198,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("index", width=70, anchor="center")
         self.adapter_tree.column("status", width=90, anchor="center")
         self.adapter_tree.column("forwarding", width=105, anchor="center")
+        self.adapter_tree.column("ics", width=115, anchor="center")
         self.adapter_tree.column("ipv4", width=170)
         self.adapter_tree.column("mac", width=145)
         self.adapter_tree.column("gateway", width=140)
@@ -545,6 +547,7 @@ class NetworkManagerApp(tk.Tk):
             "index": ("index", "Index"),
             "status": ("status", "Status"),
             "forwarding": ("forwarding", "IP Forwarding"),
+            "ics": ("ics", "ICS Compatible"),
             "ipv4": ("ipv4", "IPv4"),
             "mac": ("mac", "MAC"),
             "gateway": ("gateway", "Gateway"),
@@ -581,6 +584,7 @@ class NetworkManagerApp(tk.Tk):
             "index": str(index),
             "status": adapter.status,
             "forwarding": _format_forwarding(adapter.forwarding_enabled),
+            "ics": _format_ics_compatible(adapter),
             "ipv4": _format_address(ipv4),
             "mac": adapter.mac,
             "gateway": ", ".join(adapter.gateways),
@@ -1247,6 +1251,8 @@ class NetworkManagerApp(tk.Tk):
                 address=_format_address(ipv4),
                 source_cidr=_source_cidr_from_text(_format_address(ipv4)),
                 backend_id=selected_adapter.id,
+                ics_compatible=selected_adapter.ics_compatible,
+                ics_note=selected_adapter.ics_note,
             )
         return None
 
@@ -1383,6 +1389,14 @@ def _format_forwarding(value: bool | None) -> str:
     if value is None:
         return "Unknown"
     return "Enabled" if value else "Disabled"
+
+
+def _format_ics_compatible(adapter: AdapterInfo) -> str:
+    if adapter.ics_compatible is True:
+        return "Yes"
+    if adapter.ics_compatible is False:
+        return "No"
+    return "Unknown" if adapter.is_virtual or adapter.is_loopback else "N/A"
 
 
 def format_elapsed_time(seconds: int | float) -> str:

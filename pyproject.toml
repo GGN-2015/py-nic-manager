@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-nic-manager"
-version = "0.1.35"
+version = "0.1.36"
 description = "A cross-platform GUI network adapter and route manager."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +47,11 @@ py_nic_manager = [
   "assets/wintun/x86/*.dll",
   "assets/wintun/arm/*.dll",
   "assets/wintun/arm64/*.dll",
+  "assets/tap-windows6/*.md",
+  "assets/tap-windows6/*.GPL",
+  "assets/tap-windows6/dist.win10/amd64/*",
+  "assets/tap-windows6/dist.win10/arm64/*",
+  "assets/tap-windows6/dist.win10/i386/*",
 ]
 
 [dependency-groups]
