@@ -589,6 +589,88 @@ def test_windows_wintun_configures_address_by_interface_index(monkeypatch: pytes
     assert "netsh" not in script.lower()
 
 
+def test_windows_wintun_delete_uses_stop_file_and_removes_leftover_device(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, object]] = []
+    state_path = tmp_path / "state.json"
+    stop_path = tmp_path / "adapter.stop"
+
+    monkeypatch.setattr(windows_wintun, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(windows_wintun, "_clean_adapter_name", lambda name: name)
+    monkeypatch.setattr(
+        windows_wintun,
+        "_load_state",
+        lambda name: {"pid": 1234, "stop_path": str(stop_path), "task_name": "task"},
+    )
+    monkeypatch.setattr(windows_wintun, "_remove_startup_task", lambda task: calls.append(("remove_task", task)))
+    monkeypatch.setattr(windows_wintun, "_request_keeper_stop", lambda name, pid, path: calls.append(("stop", path)))
+    monkeypatch.setattr(windows_wintun, "_adapter_exists", lambda name: True)
+    monkeypatch.setattr(windows_wintun, "_terminate_process", lambda pid: calls.append(("terminate", pid)))
+    monkeypatch.setattr(windows_wintun, "_remove_adapter_by_name", lambda name: calls.append(("remove_adapter", name)))
+    monkeypatch.setattr(windows_wintun, "_wait_for_adapter_removed", lambda name, timeout: calls.append(("wait_removed", timeout)))
+    monkeypatch.setattr(windows_wintun, "_state_path", lambda name: state_path)
+
+    state_path.write_text("{}", encoding="utf-8")
+    stop_path.write_text("stop", encoding="utf-8")
+
+    windows_wintun.delete_virtual_adapter("py-virtual0")
+
+    assert ("stop", stop_path) in calls
+    assert ("remove_adapter", "py-virtual0") in calls
+    assert ("wait_removed", 20) in calls
+    assert not state_path.exists()
+    assert not stop_path.exists()
+
+
+def test_windows_wintun_remove_adapter_uses_pnp_device_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts: list[str] = []
+
+    monkeypatch.setattr(
+        windows_wintun,
+        "_adapter_info",
+        lambda name: {"PnPDeviceID": r"ROOT\\NET\\0001"},
+    )
+    monkeypatch.setattr(windows_wintun, "_run_powershell", lambda script: scripts.append(script) or "")
+
+    windows_wintun._remove_adapter_by_name("py-virtual0")
+
+    assert len(scripts) == 1
+    assert r"ROOT\\NET\\0001" in scripts[0]
+    assert "pnputil /remove-device" in scripts[0]
+    assert "/subtree /force" in scripts[0]
+
+
+def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    popen_commands: list[list[str]] = []
+    saved_states: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_popen(command: list[str], **kwargs):
+        popen_commands.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr(windows_wintun, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(windows_wintun, "_clean_adapter_name", lambda name: name)
+    monkeypatch.setattr(windows_wintun, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(windows_wintun, "_wintun_dll_path", lambda: tmp_path / "wintun.dll")
+    monkeypatch.setattr(windows_wintun, "_load_state", lambda name: {})
+    monkeypatch.setattr(windows_wintun, "_adapter_exists", lambda name: False)
+    monkeypatch.setattr(windows_wintun.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(windows_wintun, "_wait_for_adapter", lambda name, timeout: {"Name": name, "InterfaceIndex": 42})
+    monkeypatch.setattr(windows_wintun, "_install_startup_task", lambda name, address: "task")
+    monkeypatch.setattr(windows_wintun, "_save_state", lambda name, state: saved_states.append(state))
+
+    windows_wintun.create_virtual_adapter("py-virtual0")
+
+    assert len(popen_commands) == 1
+    assert "--stop-file" in popen_commands[0]
+    assert str(tmp_path) in popen_commands[0][popen_commands[0].index("--stop-file") + 1]
+    assert saved_states[0]["stop_path"]
+
+
 def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:
     backend = LinuxBackend(dry_run=True)
 

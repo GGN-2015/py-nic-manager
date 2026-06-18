@@ -38,12 +38,15 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
     _ensure_windows()
     clean_name = _clean_adapter_name(name)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    stop_path = _stop_path(clean_name)
+    if stop_path.exists():
+        stop_path.unlink()
     dll_path = _wintun_dll_path()
     state = _load_state(clean_name)
     if _adapter_exists(clean_name):
         if address:
             _configure_address(clean_name, address)
-        state.update({"name": clean_name, "dll_path": str(dll_path), "address": address})
+        state.update({"name": clean_name, "dll_path": str(dll_path), "address": address, "stop_path": str(stop_path)})
         _save_state(clean_name, state)
         print(f"Wintun adapter already exists: {clean_name}")
         return
@@ -57,6 +60,8 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
         clean_name,
         "--dll",
         str(dll_path),
+        "--stop-file",
+        str(stop_path),
     ]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     process = subprocess.Popen(
@@ -71,20 +76,27 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
     except Exception:
         _terminate_process(process.pid)
         raise
-    if address:
-        _configure_address(clean_name, address)
-    task_name = _install_startup_task(clean_name, address)
-    _save_state(
-        clean_name,
-        {
-            "name": clean_name,
-            "pid": process.pid,
-            "dll_path": str(dll_path),
-            "address": address,
-            "task_name": task_name,
-            "created_at": int(time.time()),
-        },
-    )
+    try:
+        if address:
+            _configure_address(clean_name, address)
+        task_name = _install_startup_task(clean_name, address)
+        _save_state(
+            clean_name,
+            {
+                "name": clean_name,
+                "pid": process.pid,
+                "dll_path": str(dll_path),
+                "address": address,
+                "stop_path": str(stop_path),
+                "task_name": task_name,
+                "created_at": int(time.time()),
+            },
+        )
+    except Exception:
+        _request_keeper_stop(clean_name, process.pid, stop_path)
+        if _adapter_exists(clean_name):
+            _terminate_process(process.pid)
+        raise
     print(f"Wintun virtual adapter created: {clean_name}")
 
 
@@ -95,19 +107,24 @@ def delete_virtual_adapter(name: str) -> None:
     task_name = str(state.get("task_name") or _task_name(clean_name))
     _remove_startup_task(task_name)
     pid = int(state.get("pid") or 0)
-    if pid:
+    stop_path = Path(str(state.get("stop_path") or _stop_path(clean_name)))
+    graceful_stop_supported = bool(state.get("stop_path"))
+    if pid and graceful_stop_supported:
+        _request_keeper_stop(clean_name, pid, stop_path)
+    elif pid:
         _terminate_process(pid)
-        time.sleep(2)
+        time.sleep(1)
     if _adapter_exists(clean_name):
-        dll = _load_wintun(str(state.get("dll_path") or _wintun_dll_path()))
-        adapter = dll.WintunOpenAdapter(clean_name)
-        if adapter:
-            dll.WintunCloseAdapter(adapter)
-        else:
-            _remove_adapter_by_name(clean_name)
+        if pid:
+            _terminate_process(pid)
+            time.sleep(1)
+        _remove_adapter_by_name(clean_name)
+        _wait_for_adapter_removed(clean_name, timeout=20)
     state_path = _state_path(clean_name)
     if state_path.exists():
         state_path.unlink()
+    if stop_path.exists():
+        stop_path.unlink()
     print(f"Wintun virtual adapter deleted: {clean_name}")
 
 
@@ -138,9 +155,10 @@ def list_virtual_adapters() -> list[dict[str, object]]:
     return items
 
 
-def keeper(name: str, dll_path: str) -> None:
+def keeper(name: str, dll_path: str, stop_file: str = "") -> None:
     _ensure_windows()
     clean_name = _clean_adapter_name(name)
+    stop_path = Path(stop_file) if stop_file else None
     dll = _load_wintun(dll_path)
     adapter = dll.WintunCreateAdapter(clean_name, TUNNEL_TYPE, None)
     if not adapter:
@@ -149,7 +167,9 @@ def keeper(name: str, dll_path: str) -> None:
     try:
         _set_interface_up(clean_name)
         while True:
-            time.sleep(3600)
+            if stop_path and stop_path.exists():
+                break
+            time.sleep(1)
     finally:
         dll.WintunCloseAdapter(adapter)
 
@@ -339,15 +359,44 @@ def _source_cidr(address: str) -> str:
 
 
 def _remove_adapter_by_name(name: str) -> None:
+    adapter = _adapter_info(name)
+    pnp_device_id = str(adapter.get("PnPDeviceID") or "") if adapter else ""
+    pnp_filter = f'$_.InstanceId -eq "{_ps_escape(pnp_device_id)}" -or' if pnp_device_id else ""
     script = rf"""
-$device = Get-PnpDevice |
-  Where-Object {{ $_.FriendlyName -eq "{_ps_escape(name)}" -or $_.FriendlyName -like "*{_ps_escape(name)}*" }} |
+$device = Get-PnpDevice -ErrorAction SilentlyContinue |
+  Where-Object {{ {pnp_filter} $_.FriendlyName -eq "{_ps_escape(name)}" -or $_.FriendlyName -like "*{_ps_escape(name)}*" }} |
   Select-Object -First 1
-if ($device) {{
-  pnputil /remove-device $device.InstanceId
+if (-not $device) {{
+  throw "Windows device for Wintun adapter '{_ps_escape(name)}' was not found."
+}}
+$output = pnputil /remove-device $device.InstanceId /subtree /force 2>&1
+if ($LASTEXITCODE -ne 0) {{
+  throw (($output | Out-String).Trim())
 }}
 """
     _run_powershell(script)
+
+
+def _request_keeper_stop(name: str, pid: int, stop_path: Path) -> None:
+    try:
+        stop_path.parent.mkdir(parents=True, exist_ok=True)
+        stop_path.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+    for _attempt in range(15):
+        if not _process_exists(pid):
+            return
+        if not _adapter_exists(name):
+            return
+        time.sleep(1)
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _terminate_process(pid: int) -> None:
@@ -406,6 +455,19 @@ def _task_name(name: str) -> str:
 
 def _state_path(name: str) -> Path:
     return STATE_DIR / f"{uuid.uuid5(uuid.NAMESPACE_DNS, name.lower())}.json"
+
+
+def _stop_path(name: str) -> Path:
+    return STATE_DIR / f"{uuid.uuid5(uuid.NAMESPACE_DNS, name.lower())}.stop"
+
+
+def _wait_for_adapter_removed(name: str, timeout: int) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _adapter_exists(name):
+            return
+        time.sleep(1)
+    raise RuntimeError(f"Wintun adapter '{name}' still exists after deletion.")
 
 
 def _load_state(name: str) -> dict[str, object]:
@@ -473,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
     keeper_parser = subparsers.add_parser("keeper", help=argparse.SUPPRESS)
     keeper_parser.add_argument("--name", required=True)
     keeper_parser.add_argument("--dll", required=True)
+    keeper_parser.add_argument("--stop-file", default="")
     args = parser.parse_args(argv)
 
     try:
@@ -486,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(list_virtual_adapters(), indent=2))
             return 0
         if args.command == "keeper":
-            keeper(args.name, args.dll)
+            keeper(args.name, args.dll, args.stop_file)
             return 0
     except Exception as exc:
         print(str(exc), file=sys.stderr)
