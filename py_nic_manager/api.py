@@ -47,6 +47,7 @@ ADAPTER_SORT_COLUMNS = {
     "dns",
     "nature",
     "kind",
+    "comment",
 }
 ROUTE_SORT_COLUMNS = {
     "destination",
@@ -755,6 +756,7 @@ def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int
         "dns": ", ".join(adapter.dns_servers),
         "nature": adapter.nature,
         "kind": _adapter_kind(adapter),
+        "comment": adapter.comment,
     }
     if sort_by == "ipv4" and ipv4 is not None:
         return _ip_or_text_sort_key(ipv4.address)

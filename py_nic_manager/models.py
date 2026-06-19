@@ -85,6 +85,7 @@ class AdapterInfo:
     id: str
     name: str
     description: str = ""
+    comment: str = ""
     mac: str = ""
     status: str = ""
     addresses: list[AddressInfo] = field(default_factory=list)
@@ -114,6 +115,7 @@ class AdapterInfo:
             id=str(data.get("id", data.get("name", ""))),
             name=str(data.get("name", "")),
             description=str(data.get("description", "")),
+            comment=str(data.get("comment", "")),
             mac=str(data.get("mac", "")),
             status=str(data.get("status", "")),
             addresses=[
@@ -139,7 +141,6 @@ class AdapterInfo:
         return {
             "id": self.id,
             "name": self.name,
-            "description": self.description,
             "mac": self.mac,
             "status": self.status,
             "addresses": [item.to_dict() for item in self.addresses],

@@ -362,7 +362,7 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self.adapter_table = QTableWidget(0, 13)
+        self.adapter_table = QTableWidget(0, 14)
         self.adapter_table.setHorizontalHeaderLabels(
             [
                 "Adapter",
@@ -378,6 +378,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 "DNS",
                 "NIC Nature",
                 "Type",
+                "Comment",
             ]
         )
         self._configure_table(self.adapter_table)
@@ -395,6 +396,7 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_table.setColumnWidth(10, 210)
         self.adapter_table.setColumnWidth(11, 165)
         self.adapter_table.setColumnWidth(12, 95)
+        self.adapter_table.setColumnWidth(13, 260)
         self.adapter_table.itemSelectionChanged.connect(self._on_adapter_select)
         splitter.addWidget(self.adapter_table)
 
@@ -785,6 +787,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 ", ".join(adapter.dns_servers),
                 adapter.nature,
                 _adapter_kind(adapter),
+                adapter.comment,
             ]
             sort_columns = [
                 "name",
@@ -800,6 +803,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 "dns",
                 "nature",
                 "kind",
+                "comment",
             ]
             for column, value in enumerate(values):
                 item = _table_item(

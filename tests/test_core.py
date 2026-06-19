@@ -155,6 +155,7 @@ def test_adapter_forwarding_round_trip() -> None:
     adapter = AdapterInfo(
         id="eth0",
         name="eth0",
+        comment="MediaTek Wi-Fi 6E MT7922 160MHz Wireless LAN Card",
         forwarding_enabled=False,
         ttl_exceeded_icmp_enabled=False,
     )
@@ -163,6 +164,23 @@ def test_adapter_forwarding_round_trip() -> None:
 
     assert loaded.forwarding_enabled is False
     assert loaded.ttl_exceeded_icmp_enabled is False
+    assert loaded.comment == ""
+
+
+def test_adapter_comment_is_runtime_only_not_exported() -> None:
+    adapter = AdapterInfo(
+        id="wifi-id",
+        name="Wi-Fi",
+        description="Wi-Fi adapter runtime description",
+        comment="MediaTek Wi-Fi 6E MT7922 160MHz Wireless LAN Card",
+    )
+
+    exported = adapter.to_dict()
+    loaded = AdapterInfo.from_dict({"id": "wifi-id", "name": "Wi-Fi", "comment": adapter.comment})
+
+    assert "comment" not in exported
+    assert "description" not in exported
+    assert loaded.comment == adapter.comment
 
 
 def test_adapter_nature_marks_physical_loopback_and_non_loopback_virtual() -> None:
@@ -396,6 +414,18 @@ def test_adapter_panel_uses_single_apply_button_for_adapter_and_forwarding_contr
         assert "Send ICMP Time Exceeded" in source
         assert "Apply Adapter Changes" not in source
         assert "Apply Forwarding" not in source
+
+
+def test_adapter_table_has_runtime_comment_column_in_both_gui_sources() -> None:
+    root = Path(__file__).resolve().parents[1] / "py_nic_manager"
+    tk_source = (root / "app.py").read_text(encoding="utf-8")
+    qt_source = (root / "qt_app.py").read_text(encoding="utf-8")
+
+    assert '"comment"' in tk_source
+    assert 'self._set_adapter_heading("comment", "Comment", "comment")' in tk_source
+    assert "adapter.comment" in tk_source
+    assert '"Comment"' in qt_source
+    assert "adapter.comment" in qt_source
 
 
 def test_route_metrics_round_trip() -> None:
@@ -1520,6 +1550,17 @@ def test_python_api_route_sorting_uses_network_and_metric_types() -> None:
     assert [route.metric for route in by_metric] == [5, 10, 50, 100, None]
 
 
+def test_python_api_adapter_sorting_supports_runtime_comment() -> None:
+    adapters = [
+        AdapterInfo("a", "Wi-Fi", comment="MediaTek Wi-Fi 6E MT7922"),
+        AdapterInfo("b", "Ethernet", comment="Realtek PCIe Controller"),
+    ]
+
+    ordered = api_sort_adapters(adapters, sort_by="comment")
+
+    assert [adapter.name for adapter in ordered] == ["Wi-Fi", "Ethernet"]
+
+
 class _FakeWindowsBackend(WindowsBackend):
     def get_global_forwarding_enabled(self):
         return False
@@ -1530,6 +1571,7 @@ class _FakeWindowsBackend(WindowsBackend):
                 id="ethernet-id",
                 name="Ethernet",
                 description="Ethernet Adapter",
+                comment="Intel(R) Ethernet Controller",
                 mac="00-11-22-33-44-55",
                 status="Up",
                 addresses=[AddressInfo("192.0.2.10", 24)],

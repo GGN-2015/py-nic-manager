@@ -407,6 +407,7 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     id = [string]$adapter.PnPDeviceID
     name = [string]$adapter.Name
     description = [string]$adapter.InterfaceDescription
+    comment = [string]$adapter.InterfaceDescription
     mac = [string]$adapter.MacAddress
     status = [string]$adapter.Status
     admin_enabled = [bool]($adapter.AdminStatus -eq "Up")
@@ -1400,6 +1401,7 @@ class LinuxBackend(BaseBackend):
                     id=name,
                     name=name,
                     description=link_kind or link_type,
+                    comment=str(item.get("ifalias", "")),
                     mac=str(item.get("address", "")),
                     status=str(item.get("operstate", "")),
                     addresses=addresses,
@@ -1742,6 +1744,7 @@ class MacOSBackend(BaseBackend):
                     id=device or service,
                     name=service,
                     description=device,
+                    comment=("$service ($device)" if device else service),
                     mac=mac,
                     status="",
                     addresses=[

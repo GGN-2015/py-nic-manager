@@ -207,6 +207,7 @@ class NetworkManagerApp(tk.Tk):
             "dns",
             "nature",
             "kind",
+            "comment",
         )
         self.adapter_tree = ttk.Treeview(
             table_frame,
@@ -227,6 +228,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("dns", "DNS", "dns")
         self._set_adapter_heading("nature", "NIC Nature", "nature")
         self._set_adapter_heading("kind", "Type", "kind")
+        self._set_adapter_heading("comment", "Comment", "comment")
         self.adapter_tree.column("#0", width=190, minwidth=160)
         self.adapter_tree.column("index", width=70, anchor="center")
         self.adapter_tree.column("status", width=90, anchor="center")
@@ -240,6 +242,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("dns", width=190)
         self.adapter_tree.column("nature", width=165, anchor="center")
         self.adapter_tree.column("kind", width=90, anchor="center")
+        self.adapter_tree.column("comment", width=260)
         self.adapter_tree.bind("<<TreeviewSelect>>", self._on_adapter_select)
         self._grid_scrollable_tree(table_frame, self.adapter_tree)
         panel.columnconfigure(1, weight=1)
@@ -592,6 +595,7 @@ class NetworkManagerApp(tk.Tk):
                     ", ".join(adapter.dns_servers),
                     adapter.nature,
                     _adapter_kind(adapter),
+                    adapter.comment,
                 ),
             )
         if selected is not None and selected in self.adapter_tree.get_children():
@@ -619,6 +623,7 @@ class NetworkManagerApp(tk.Tk):
             "dns": ("dns", "DNS"),
             "nature": ("nature", "NIC Nature"),
             "kind": ("kind", "Type"),
+            "comment": ("comment", "Comment"),
         }
         for sort_column, (column_id, label) in labels.items():
             indicator = ""
@@ -659,6 +664,7 @@ class NetworkManagerApp(tk.Tk):
             "dns": ", ".join(adapter.dns_servers),
             "nature": adapter.nature,
             "kind": _adapter_kind(adapter),
+            "comment": adapter.comment,
         }
         if column == "index":
             return (0, values["index"].zfill(8))
