@@ -97,6 +97,7 @@ class AdapterInfo:
     virtual_kind: str = ""
     nic_nature: str = ""
     forwarding_enabled: bool | None = None
+    ttl_exceeded_icmp_enabled: bool | None = None
     ics_compatible: bool | None = None
     ics_note: str = ""
 
@@ -129,6 +130,7 @@ class AdapterInfo:
             virtual_kind=str(data.get("virtual_kind", "")),
             nic_nature=str(data.get("nic_nature", "")),
             forwarding_enabled=_optional_bool(data.get("forwarding_enabled")),
+            ttl_exceeded_icmp_enabled=_optional_bool(data.get("ttl_exceeded_icmp_enabled")),
             ics_compatible=_optional_bool(data.get("ics_compatible")),
             ics_note=str(data.get("ics_note", "")),
         )
@@ -150,6 +152,7 @@ class AdapterInfo:
             "virtual_kind": self.virtual_kind,
             "nic_nature": self.nature,
             "forwarding_enabled": self.forwarding_enabled,
+            "ttl_exceeded_icmp_enabled": self.ttl_exceeded_icmp_enabled,
             "ics_compatible": self.ics_compatible,
             "ics_note": self.ics_note,
         }

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, scrolledtext, ttk
 
 from .admin import is_admin
-from .backends import BackendError, BaseBackend, get_backend
+from .backends import BackendError, BaseBackend, combine_operation_plans, get_backend
 from .io import export_snapshot, import_snapshot
 from .models import (
     AdapterInfo,
@@ -199,6 +199,7 @@ class NetworkManagerApp(tk.Tk):
             "status",
             "admin",
             "forwarding",
+            "ttl_icmp",
             "ics",
             "ipv4",
             "mac",
@@ -218,6 +219,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("status", "Status", "status")
         self._set_adapter_heading("admin", "Admin", "admin")
         self._set_adapter_heading("forwarding", "IP Forwarding", "forwarding")
+        self._set_adapter_heading("ttl_icmp", "TTL ICMP", "ttl_icmp")
         self._set_adapter_heading("ics", "ICS Compatible", "ics")
         self._set_adapter_heading("ipv4", "IPv4", "ipv4")
         self._set_adapter_heading("mac", "MAC", "mac")
@@ -230,6 +232,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("status", width=90, anchor="center")
         self.adapter_tree.column("admin", width=85, anchor="center")
         self.adapter_tree.column("forwarding", width=105, anchor="center")
+        self.adapter_tree.column("ttl_icmp", width=100, anchor="center")
         self.adapter_tree.column("ics", width=115, anchor="center")
         self.adapter_tree.column("ipv4", width=170)
         self.adapter_tree.column("mac", width=145)
@@ -251,6 +254,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_dns_var = tk.StringVar()
         self.adapter_dhcp_var = tk.BooleanVar(value=False)
         self.adapter_forwarding_var = tk.BooleanVar(value=True)
+        self.adapter_ttl_icmp_var = tk.BooleanVar(value=True)
 
         self._labeled_entry(panel, "Name", self.adapter_name_var, 1, readonly=True)
         self._labeled_entry(panel, "MAC address", self.adapter_mac_var, 2, admin_required=True)
@@ -268,22 +272,22 @@ class NetworkManagerApp(tk.Tk):
         )
         self.adapter_forwarding_check.grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 10))
         self._admin_only_widgets.append(self.adapter_forwarding_check)
+        self.adapter_ttl_icmp_check = ttk.Checkbutton(
+            panel,
+            text="Send ICMP Time Exceeded",
+            variable=self.adapter_ttl_icmp_var,
+        )
+        self.adapter_ttl_icmp_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self._admin_only_widgets.append(self.adapter_ttl_icmp_check)
 
         self.apply_adapter_button = ttk.Button(
             panel,
-            text="Apply Adapter Changes",
+            text="Apply Adapter Settings",
             style="Action.TButton",
             command=self.apply_selected_adapter,
         )
-        self.apply_adapter_button.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.apply_adapter_button.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._admin_only_widgets.append(self.apply_adapter_button)
-        self.apply_forwarding_button = ttk.Button(
-            panel,
-            text="Apply Forwarding",
-            command=self.apply_selected_adapter_forwarding,
-        )
-        self.apply_forwarding_button.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        self._admin_only_widgets.append(self.apply_forwarding_button)
         self.enable_adapter_button = ttk.Button(
             panel,
             text="Enable Selected Adapter",
@@ -580,6 +584,7 @@ class NetworkManagerApp(tk.Tk):
                     adapter.status,
                     _format_admin_enabled(adapter.admin_enabled),
                     _format_forwarding(adapter.forwarding_enabled),
+                    _format_forwarding(adapter.ttl_exceeded_icmp_enabled),
                     _format_ics_compatible(adapter),
                     _format_address(ipv4),
                     adapter.mac,
@@ -606,6 +611,7 @@ class NetworkManagerApp(tk.Tk):
             "status": ("status", "Status"),
             "admin": ("admin", "Admin"),
             "forwarding": ("forwarding", "IP Forwarding"),
+            "ttl_icmp": ("ttl_icmp", "TTL ICMP"),
             "ics": ("ics", "ICS Compatible"),
             "ipv4": ("ipv4", "IPv4"),
             "mac": ("mac", "MAC"),
@@ -645,6 +651,7 @@ class NetworkManagerApp(tk.Tk):
             "status": adapter.status,
             "admin": _format_admin_enabled(adapter.admin_enabled),
             "forwarding": _format_forwarding(adapter.forwarding_enabled),
+            "ttl_icmp": _format_forwarding(adapter.ttl_exceeded_icmp_enabled),
             "ics": _format_ics_compatible(adapter),
             "ipv4": _format_address(ipv4),
             "mac": adapter.mac,
@@ -786,6 +793,9 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_dns_var.set(", ".join(adapter.dns_servers))
         self.adapter_dhcp_var.set(bool(adapter.dhcp_enabled))
         self.adapter_forwarding_var.set(True if adapter.forwarding_enabled is None else adapter.forwarding_enabled)
+        self.adapter_ttl_icmp_var.set(
+            True if adapter.ttl_exceeded_icmp_enabled is None else adapter.ttl_exceeded_icmp_enabled
+        )
         if adapter.is_loopback and not self.loopback_name_var.get().strip():
             self.loopback_name_var.set(adapter.name)
         if adapter.is_virtual:
@@ -828,6 +838,15 @@ class NetworkManagerApp(tk.Tk):
                 self.adapter_mac_var.get().strip(),
                 self.adapter_dhcp_var.get(),
             )
+            forwarding_plan = self.backend.plan_adapter_forwarding_update(adapter, self.adapter_forwarding_var.get())
+            ttl_icmp_plan = self.backend.plan_adapter_ttl_exceeded_icmp_update(
+                adapter,
+                self.adapter_ttl_icmp_var.get(),
+            )
+            plan = combine_operation_plans(
+                "Update adapter settings",
+                [plan, forwarding_plan, ttl_icmp_plan],
+            )
         except (ValueError, BackendError) as exc:
             self._show_message("Invalid Adapter Settings", str(exc), kind="error")
             return
@@ -839,7 +858,15 @@ class NetworkManagerApp(tk.Tk):
             self._show_message("No Adapter Selected", "Select an adapter first.")
             return
         try:
-            plan = self.backend.plan_adapter_forwarding_update(adapter, self.adapter_forwarding_var.get())
+            forwarding_plan = self.backend.plan_adapter_forwarding_update(adapter, self.adapter_forwarding_var.get())
+            ttl_icmp_plan = self.backend.plan_adapter_ttl_exceeded_icmp_update(
+                adapter,
+                self.adapter_ttl_icmp_var.get(),
+            )
+            plan = combine_operation_plans(
+                "Update adapter forwarding controls",
+                [forwarding_plan, ttl_icmp_plan],
+            )
         except BackendError as exc:
             self._show_message("Forwarding Error", str(exc), kind="error")
             return

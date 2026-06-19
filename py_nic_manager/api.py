@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .admin import is_admin as default_admin_checker
-from .backends import BaseBackend, get_backend
+from .backends import BaseBackend, combine_operation_plans, get_backend
 from .io import export_snapshot as write_snapshot
 from .io import import_snapshot as read_snapshot
 from .models import (
@@ -39,6 +39,7 @@ ADAPTER_SORT_COLUMNS = {
     "status",
     "admin",
     "forwarding",
+    "ttl_icmp",
     "ics",
     "ipv4",
     "mac",
@@ -297,6 +298,85 @@ class NetworkManager:
     ) -> list[CommandResult]:
         return self.run_plan(
             self.plan_set_adapter_forwarding(adapter, enabled),
+            require_admin=require_admin,
+        )
+
+    def plan_set_adapter_ttl_exceeded_icmp(self, adapter: AdapterRef, enabled: bool) -> OperationPlan:
+        return self.backend.plan_adapter_ttl_exceeded_icmp_update(self.find_adapter(adapter), bool(enabled))
+
+    def set_adapter_ttl_exceeded_icmp(
+        self,
+        adapter: AdapterRef,
+        enabled: bool,
+        *,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_set_adapter_ttl_exceeded_icmp(adapter, enabled),
+            require_admin=require_admin,
+        )
+
+    def plan_update_adapter_settings(
+        self,
+        adapter: AdapterRef,
+        *,
+        address: AddressInfo | str | None = None,
+        prefix_length: int | str | None = None,
+        gateway: str = "",
+        dns_servers: Iterable[str] | str | None = None,
+        mac: str = "",
+        dhcp_enabled: bool = False,
+        forwarding_enabled: bool | None = None,
+        ttl_exceeded_icmp_enabled: bool | None = None,
+    ) -> OperationPlan:
+        current = self.find_adapter(adapter)
+        plans = [
+            self.backend.plan_adapter_update(
+                current,
+                _coerce_address(address, prefix_length),
+                validate_ip(gateway, allow_empty=True),
+                _coerce_dns_servers(dns_servers),
+                mac.strip(),
+                bool(dhcp_enabled),
+            )
+        ]
+        if forwarding_enabled is not None:
+            plans.append(self.backend.plan_adapter_forwarding_update(current, bool(forwarding_enabled)))
+        if ttl_exceeded_icmp_enabled is not None:
+            plans.append(
+                self.backend.plan_adapter_ttl_exceeded_icmp_update(
+                    current,
+                    bool(ttl_exceeded_icmp_enabled),
+                )
+            )
+        return combine_operation_plans("Update adapter settings", plans)
+
+    def update_adapter_settings(
+        self,
+        adapter: AdapterRef,
+        *,
+        address: AddressInfo | str | None = None,
+        prefix_length: int | str | None = None,
+        gateway: str = "",
+        dns_servers: Iterable[str] | str | None = None,
+        mac: str = "",
+        dhcp_enabled: bool = False,
+        forwarding_enabled: bool | None = None,
+        ttl_exceeded_icmp_enabled: bool | None = None,
+        require_admin: bool = True,
+    ) -> list[CommandResult]:
+        return self.run_plan(
+            self.plan_update_adapter_settings(
+                adapter,
+                address=address,
+                prefix_length=prefix_length,
+                gateway=gateway,
+                dns_servers=dns_servers,
+                mac=mac,
+                dhcp_enabled=dhcp_enabled,
+                forwarding_enabled=forwarding_enabled,
+                ttl_exceeded_icmp_enabled=ttl_exceeded_icmp_enabled,
+            ),
             require_admin=require_admin,
         )
 
@@ -667,6 +747,7 @@ def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int
         "status": adapter.status,
         "admin": _format_admin_enabled(adapter.admin_enabled),
         "forwarding": _format_forwarding(adapter.forwarding_enabled),
+        "ttl_icmp": _format_forwarding(adapter.ttl_exceeded_icmp_enabled),
         "ics": _format_ics_compatible(adapter),
         "ipv4": "" if ipv4 is None else _format_address(ipv4),
         "mac": adapter.mac,

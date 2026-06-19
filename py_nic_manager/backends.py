@@ -97,6 +97,15 @@ class BaseBackend(ABC):
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         raise NotImplementedError
 
+    def plan_adapter_ttl_exceeded_icmp_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "enabled" if enabled else "disabled"
+        return OperationPlan(
+            "Update adapter TTL-exceeded ICMP",
+            [],
+            [f"The {self.name} backend does not support per-adapter TTL-exceeded ICMP controls."],
+            restart_required=False,
+        )
+
     @abstractmethod
     def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         raise NotImplementedError
@@ -120,11 +129,9 @@ class BaseBackend(ABC):
     def plan_nat_update(self, old_rule: NatRule, new_rule: NatRule) -> OperationPlan:
         delete_plan = self.plan_nat_delete(old_rule)
         create_plan = self.plan_nat_create(new_rule)
-        return OperationPlan(
+        return combine_operation_plans(
             "Update NAT rule",
-            delete_plan.commands + create_plan.commands,
-            delete_plan.notes + create_plan.notes,
-            restart_required=delete_plan.restart_required or create_plan.restart_required,
+            [delete_plan, create_plan],
         )
 
     def get_snapshot(self) -> NetworkSnapshot:
@@ -177,6 +184,11 @@ class BaseBackend(ABC):
             restart_required = restart_required or plan.restart_required
             if saved.forwarding_enabled is not None:
                 plan = self.plan_adapter_forwarding_update(current, saved.forwarding_enabled)
+                commands.extend(plan.commands)
+                notes.extend(plan.notes)
+                restart_required = restart_required or plan.restart_required
+            if saved.ttl_exceeded_icmp_enabled is not None:
+                plan = self.plan_adapter_ttl_exceeded_icmp_update(current, saved.ttl_exceeded_icmp_enabled)
                 commands.extend(plan.commands)
                 notes.extend(plan.notes)
                 restart_required = restart_required or plan.restart_required
@@ -322,6 +334,22 @@ class BaseBackend(ABC):
             raise BackendError(f"Failed to parse JSON from {' '.join(command)}") from exc
 
 
+def combine_operation_plans(title: str, plans: Iterable[OperationPlan]) -> OperationPlan:
+    commands: list[list[str]] = []
+    notes: list[str] = []
+    restart_required = False
+    for plan in plans:
+        commands.extend(plan.commands)
+        notes.extend(plan.notes)
+        restart_required = restart_required or plan.restart_required
+    return OperationPlan(
+        title,
+        _dedupe_commands(commands),
+        notes,
+        restart_required=restart_required,
+    )
+
+
 class WindowsBackend(BaseBackend):
     name = "Windows"
 
@@ -339,6 +367,18 @@ $dnsServers = @{}
 Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
   $dnsServers[[int]$_.InterfaceIndex] = @($_.ServerAddresses)
 }
+$ttlIcmpBlocks = @{}
+try {
+  $ttlPrefix = "Py NIC Manager TTL Exceeded Block - "
+  Get-NetFirewallRule -DisplayName "$ttlPrefix*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Enabled -eq "True" } |
+    ForEach-Object {
+      $displayName = [string]$_.DisplayName
+      if ($displayName.StartsWith($ttlPrefix)) {
+        $ttlIcmpBlocks[$displayName.Substring($ttlPrefix.Length)] = $true
+      }
+    }
+} catch {}
 $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex | ForEach-Object {
   $adapter = $_
   $index = [int]$adapter.InterfaceIndex
@@ -373,6 +413,7 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     dhcp_enabled = [bool]($config.NetIPv4Interface.Dhcp -eq "Enabled")
     is_loopback = $isLoopback
     forwarding_enabled = [bool]($ipInterface.Forwarding -eq "Enabled")
+    ttl_exceeded_icmp_enabled = [bool](-not $ttlIcmpBlocks.ContainsKey([string]$adapter.Name))
     is_virtual = $isVirtual
     virtual_kind = $virtualKind
     ics_compatible = $icsCompatible
@@ -701,6 +742,41 @@ if ($device) {{
             f'-AddressFamily IPv4 -Forwarding {value}'
         )
         return OperationPlan("Update adapter forwarding", [_powershell(script)])
+
+    def plan_adapter_ttl_exceeded_icmp_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        rule_name = _windows_ttl_exceeded_firewall_rule_name(adapter.name)
+        if enabled:
+            script = f'Remove-NetFirewallRule -DisplayName "{_ps_escape(rule_name)}" -ErrorAction SilentlyContinue'
+            return OperationPlan(
+                "Enable TTL-exceeded ICMP",
+                [_powershell(script)],
+                [
+                    "Windows will be allowed to send outbound ICMPv4 Time Exceeded messages "
+                    f"for packets handled on {adapter.name}."
+                ],
+            )
+        script = rf"""
+$ruleName = "{_ps_escape(rule_name)}"
+$interfaceAlias = "{_ps_escape(adapter.name)}"
+Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+New-NetFirewallRule `
+  -DisplayName $ruleName `
+  -Direction Outbound `
+  -Action Block `
+  -Protocol ICMPv4 `
+  -IcmpType 11 `
+  -InterfaceAlias $interfaceAlias `
+  -Profile Any | Out-Null
+"""
+        return OperationPlan(
+            "Disable TTL-exceeded ICMP",
+            [_powershell(script)],
+            [
+                "Py NIC Manager blocks outbound ICMPv4 Time Exceeded messages on this interface. "
+                "Packets whose TTL expires while being forwarded are still dropped, but the sender "
+                "will not receive the TTL exceeded notification from this host."
+            ],
+        )
 
     def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         command = "Enable-NetAdapter" if enabled else "Disable-NetAdapter"
@@ -1301,6 +1377,7 @@ class LinuxBackend(BaseBackend):
         data = self.run_json(["ip", "-j", "-d", "addr", "show"])
         routes = self.list_routes()
         dns_by_iface = self._dns_servers_by_iface()
+        ttl_icmp_disabled = self._ttl_exceeded_icmp_disabled_interfaces()
         adapters: list[AdapterInfo] = []
         for item in _as_list(data):
             name = str(item.get("ifname", ""))
@@ -1339,6 +1416,7 @@ class LinuxBackend(BaseBackend):
                     virtual_kind=link_kind if is_virtual_kind else "",
                     nic_nature=NIC_NATURE_PHYSICAL if is_dummy_loopback and not is_kernel_loopback else "",
                     forwarding_enabled=self._forwarding_enabled(name),
+                    ttl_exceeded_icmp_enabled=None if ttl_icmp_disabled is None else name not in ttl_icmp_disabled,
                 )
             )
         return adapters
@@ -1529,6 +1607,17 @@ class LinuxBackend(BaseBackend):
             [["sysctl", "-w", f"net.ipv4.conf.{adapter.name}.forwarding={value}"]],
         )
 
+    def plan_adapter_ttl_exceeded_icmp_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        state = "enabled" if enabled else "disabled"
+        return OperationPlan(
+            "Update TTL-exceeded ICMP",
+            [[sys.executable, "-m", "py_nic_manager.ttl_exceeded", "set", adapter.name, state]],
+            [
+                "Linux normally emits ICMP Time Exceeded when a forwarded IPv4 packet's TTL expires.",
+                "Disabling this option adds a Py NIC Manager iptables mangle rule that silently drops TTL=1 packets received on this interface.",
+            ],
+        )
+
     def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         state = "up" if enabled else "down"
         return OperationPlan(
@@ -1607,6 +1696,30 @@ class LinuxBackend(BaseBackend):
         except OSError:
             return None
 
+    def _ttl_exceeded_icmp_disabled_interfaces(self) -> set[str] | None:
+        iptables = shutil.which("iptables")
+        if not iptables:
+            return None
+        result = self.run([iptables, "-t", "mangle", "-S", "PREROUTING"])
+        if not result.ok:
+            return None
+        disabled: set[str] = set()
+        marker = "py-nic-manager-ttl-exceeded:"
+        for line in result.stdout.splitlines():
+            if marker not in line or " -j DROP" not in line:
+                continue
+            tokens = shlex.split(line)
+            if "-i" in tokens:
+                try:
+                    disabled.add(tokens[tokens.index("-i") + 1])
+                    continue
+                except IndexError:
+                    pass
+            comment = next((token for token in tokens if token.startswith(marker)), "")
+            if comment:
+                disabled.add(comment.removeprefix(marker))
+        return disabled
+
 
 class MacOSBackend(BaseBackend):
     name = "macOS"
@@ -1616,6 +1729,7 @@ class MacOSBackend(BaseBackend):
         enabled_services = self._enabled_services()
         global_forwarding = self._global_forwarding_enabled()
         disabled_forwarding = self._forwarding_disabled_interfaces()
+        ttl_icmp_disabled = self._ttl_exceeded_icmp_disabled_interfaces()
         adapters: list[AdapterInfo] = []
         for service, device in services.items():
             info = self._networksetup_getinfo(service)
@@ -1651,6 +1765,7 @@ class MacOSBackend(BaseBackend):
                         global_forwarding,
                         disabled_forwarding,
                     ),
+                    ttl_exceeded_icmp_enabled=None if not device else device not in ttl_icmp_disabled,
                 )
             )
         adapters.extend(self._loopback_aliases())
@@ -1811,6 +1926,19 @@ class MacOSBackend(BaseBackend):
             ],
         )
 
+    def plan_adapter_ttl_exceeded_icmp_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
+        device = adapter.description or adapter.id
+        if not device or adapter.id.startswith("lo0:"):
+            raise BackendError("A real macOS network device is required for TTL-exceeded ICMP changes.")
+        state = "enabled" if enabled else "disabled"
+        return OperationPlan(
+            "Update TTL-exceeded ICMP",
+            [[sys.executable, "-m", "py_nic_manager.ttl_exceeded", "set", device, state]],
+            [
+                "macOS uses PF rules to block outbound ICMPv4 Time Exceeded replies on selected interfaces.",
+            ],
+        )
+
     def plan_adapter_admin_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         state = "on" if enabled else "off"
         if adapter.name and not adapter.is_virtual and not adapter.id.startswith("lo0:"):
@@ -1926,6 +2054,14 @@ class MacOSBackend(BaseBackend):
             from .macos_forwarding import load_disabled_interfaces
 
             return load_disabled_interfaces()
+        except Exception:
+            return set()
+
+    def _ttl_exceeded_icmp_disabled_interfaces(self) -> set[str]:
+        try:
+            from .ttl_exceeded import load_macos_disabled_interfaces
+
+            return load_macos_disabled_interfaces()
         except Exception:
             return set()
 
@@ -2812,3 +2948,8 @@ def _ifconfig_netmask_to_prefix(value: str) -> int | None:
 
 def _ps_escape(value: str) -> str:
     return value.replace("`", "``").replace('"', '`"')
+
+
+def _windows_ttl_exceeded_firewall_rule_name(interface_name: str) -> str:
+    clean = interface_name.strip() or "unknown"
+    return f"Py NIC Manager TTL Exceeded Block - {clean}"

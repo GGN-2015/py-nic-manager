@@ -118,10 +118,14 @@ Adapters:
 
 - `plan_update_adapter(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False)`
 - `update_adapter(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False, require_admin=True)`
+- `plan_update_adapter_settings(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False, forwarding_enabled=None, ttl_exceeded_icmp_enabled=None)`
+- `update_adapter_settings(adapter, address=None, prefix_length=None, gateway="", dns_servers=None, mac="", dhcp_enabled=False, forwarding_enabled=None, ttl_exceeded_icmp_enabled=None, require_admin=True)`
 - `plan_set_global_forwarding(enabled)`
 - `set_global_forwarding(enabled, require_admin=True)`
 - `plan_set_adapter_forwarding(adapter, enabled)`
 - `set_adapter_forwarding(adapter, enabled, require_admin=True)`
+- `plan_set_adapter_ttl_exceeded_icmp(adapter, enabled)`
+- `set_adapter_ttl_exceeded_icmp(adapter, enabled, require_admin=True)`
 - `plan_set_adapter_admin(adapter, enabled)`
 - `set_adapter_admin(adapter, enabled, require_admin=True)`
 
@@ -179,12 +183,14 @@ Every GUI operation has a headless equivalent:
 | View global IPv4 forwarding | `get_global_forwarding_enabled()`, `get_snapshot()` |
 | Sort adapter, route, and NAT tables | `list_adapters(sort_by=...)`, `list_routes(sort_by=...)`, `list_nat_rules(sort_by=...)` |
 | Edit adapter IP, MAC, gateway, DNS, DHCP | `plan_update_adapter()`, `update_adapter()` |
+| Apply adapter settings and forwarding controls together | `plan_update_adapter_settings()`, `update_adapter_settings()` |
 | Edit loopback configuration | `plan_update_loopback()`, `update_loopback()` |
 | Create loopback | `plan_create_loopback()`, `create_loopback()` |
 | Delete loopback | `plan_delete_loopback()`, `delete_loopback()` |
 | Create virtual NIC | `plan_create_virtual_adapter()`, `create_virtual_adapter()` |
 | Delete virtual NIC | `plan_delete_virtual_adapter()`, `delete_virtual_adapter()` |
 | Set per-adapter IPv4 forwarding | `plan_set_adapter_forwarding()`, `set_adapter_forwarding()` |
+| Allow or block ICMP Time Exceeded replies for a selected adapter | `plan_set_adapter_ttl_exceeded_icmp()`, `set_adapter_ttl_exceeded_icmp()` |
 | Enable or disable an adapter | `plan_set_adapter_admin()`, `set_adapter_admin()` |
 | Set global IPv4 forwarding | `plan_set_global_forwarding()`, `set_global_forwarding()` |
 | Run a source-address ping test | `ping_test_command()`, `start_ping_test()` |
@@ -352,6 +358,29 @@ plan = manager.plan_set_adapter_forwarding("Ethernet", False)
 results = manager.set_adapter_forwarding("Ethernet", False)
 ```
 
+Preview or set whether a selected adapter may send ICMPv4 Time Exceeded replies
+when a forwarded packet's TTL expires:
+
+```python
+plan = manager.plan_set_adapter_ttl_exceeded_icmp("Ethernet", False)
+results = manager.set_adapter_ttl_exceeded_icmp("Ethernet", False)
+```
+
+Apply adapter address/DNS/MAC settings, per-adapter forwarding, and TTL-exceeded
+ICMP behavior as one command plan:
+
+```python
+plan = manager.plan_update_adapter_settings(
+    "Ethernet",
+    address="192.0.2.50/24",
+    gateway="192.0.2.1",
+    dns_servers="1.1.1.1, 8.8.8.8",
+    forwarding_enabled=True,
+    ttl_exceeded_icmp_enabled=True,
+)
+results = manager.run_plan(plan)
+```
+
 Preview or change the adapter administrative state:
 
 ```python
@@ -370,6 +399,10 @@ Platform behavior is the same as the GUI: Windows and Linux use native
 global and per-interface controls where the operating system exposes them.
 macOS uses the global IPv4 forwarding switch plus Py NIC Manager's `pf` rules
 to block forwarded packets received on disabled interfaces.
+TTL-exceeded ICMP controls are implemented with tagged Windows Firewall rules
+on Windows, tagged `iptables` mangle rules on Linux, and a tagged `pf` anchor
+on macOS. The Linux rule only matches packets that are not destined for the
+local host, so local TTL diagnostics are not silently dropped by this feature.
 
 Plans that change global IPv4 forwarding set `OperationPlan.restart_required`
 to `True` because the operating system may need a restart before the global

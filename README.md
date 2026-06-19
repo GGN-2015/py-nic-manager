@@ -132,6 +132,12 @@ by the local machine. Changing the global IPv4 forwarding setting may require a
 restart before the setting is fully active, and the GUI asks whether to restart
 immediately after a successful change.
 
+The adapter editor also includes a per-adapter "Send ICMP Time Exceeded"
+control. When enabled, the host may send ICMPv4 Time Exceeded replies after
+dropping forwarded packets whose TTL expires. When disabled, Py NIC Manager
+adds a tagged platform firewall rule for that adapter: Windows uses Windows
+Firewall, Linux uses `iptables` mangle rules, and macOS uses a `pf` anchor.
+
 ### Windows
 
 The Windows backend uses PowerShell networking cmdlets, `netsh`, `route`, and

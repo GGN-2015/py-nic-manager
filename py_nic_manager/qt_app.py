@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .api import NetworkManager, adapter_sort_key, nat_sort_key, route_sort_key
-from .backends import BackendError, decode_command_output
+from .backends import BackendError, combine_operation_plans, decode_command_output
 from .models import (
     AdapterInfo,
     AddressInfo,
@@ -362,7 +362,7 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self.adapter_table = QTableWidget(0, 12)
+        self.adapter_table = QTableWidget(0, 13)
         self.adapter_table.setHorizontalHeaderLabels(
             [
                 "Adapter",
@@ -370,6 +370,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 "Status",
                 "Admin",
                 "IP Forwarding",
+                "TTL ICMP",
                 "ICS Compatible",
                 "IPv4",
                 "MAC",
@@ -386,13 +387,14 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_table.setColumnWidth(2, 90)
         self.adapter_table.setColumnWidth(3, 85)
         self.adapter_table.setColumnWidth(4, 115)
-        self.adapter_table.setColumnWidth(5, 120)
-        self.adapter_table.setColumnWidth(6, 170)
-        self.adapter_table.setColumnWidth(7, 145)
-        self.adapter_table.setColumnWidth(8, 140)
-        self.adapter_table.setColumnWidth(9, 210)
-        self.adapter_table.setColumnWidth(10, 165)
-        self.adapter_table.setColumnWidth(11, 95)
+        self.adapter_table.setColumnWidth(5, 105)
+        self.adapter_table.setColumnWidth(6, 120)
+        self.adapter_table.setColumnWidth(7, 170)
+        self.adapter_table.setColumnWidth(8, 145)
+        self.adapter_table.setColumnWidth(9, 140)
+        self.adapter_table.setColumnWidth(10, 210)
+        self.adapter_table.setColumnWidth(11, 165)
+        self.adapter_table.setColumnWidth(12, 95)
         self.adapter_table.itemSelectionChanged.connect(self._on_adapter_select)
         splitter.addWidget(self.adapter_table)
 
@@ -417,7 +419,12 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_dns_edit = self._line_edit(admin_required=True)
         self.adapter_dhcp_check = QCheckBox("Use DHCP for IPv4")
         self.adapter_forwarding_check = QCheckBox("Enable IPv4 router forwarding")
-        self._admin_only_widgets.extend([self.adapter_dhcp_check, self.adapter_forwarding_check])
+        self.adapter_ttl_icmp_check = QCheckBox("Send ICMP Time Exceeded")
+        self._admin_only_widgets.extend([
+            self.adapter_dhcp_check,
+            self.adapter_forwarding_check,
+            self.adapter_ttl_icmp_check,
+        ])
 
         form.addRow("Name", self.adapter_name_edit)
         form.addRow("MAC address", self.adapter_mac_edit)
@@ -427,24 +434,21 @@ class NetworkManagerQtWindow(QMainWindow):
         form.addRow("DNS servers", self.adapter_dns_edit)
         form.addRow("", self.adapter_dhcp_check)
         form.addRow("", self.adapter_forwarding_check)
+        form.addRow("", self.adapter_ttl_icmp_check)
 
-        self.apply_adapter_button = QPushButton("Apply Adapter Changes")
+        self.apply_adapter_button = QPushButton("Apply Adapter Settings")
         self.apply_adapter_button.setObjectName("primaryButton")
         self.apply_adapter_button.clicked.connect(self.apply_selected_adapter)
-        self.apply_forwarding_button = QPushButton("Apply Forwarding")
-        self.apply_forwarding_button.clicked.connect(self.apply_selected_adapter_forwarding)
         self.enable_adapter_button = QPushButton("Enable Selected Adapter")
         self.enable_adapter_button.clicked.connect(lambda: self.set_selected_adapter_admin(True))
         self.disable_adapter_button = QPushButton("Disable Selected Adapter")
         self.disable_adapter_button.clicked.connect(lambda: self.set_selected_adapter_admin(False))
         self._admin_only_widgets.extend([
             self.apply_adapter_button,
-            self.apply_forwarding_button,
             self.enable_adapter_button,
             self.disable_adapter_button,
         ])
         panel_layout.addWidget(self.apply_adapter_button)
-        panel_layout.addWidget(self.apply_forwarding_button)
         panel_layout.addWidget(self.enable_adapter_button)
         panel_layout.addWidget(self.disable_adapter_button)
 
@@ -773,6 +777,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 adapter.status,
                 _format_admin_enabled(adapter.admin_enabled),
                 _format_forwarding(adapter.forwarding_enabled),
+                _format_forwarding(adapter.ttl_exceeded_icmp_enabled),
                 _format_ics_compatible(adapter),
                 _format_address(ipv4),
                 adapter.mac,
@@ -787,6 +792,7 @@ class NetworkManagerQtWindow(QMainWindow):
                 "status",
                 "admin",
                 "forwarding",
+                "ttl_icmp",
                 "ics",
                 "ipv4",
                 "mac",
@@ -890,6 +896,9 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_dns_edit.setText(", ".join(adapter.dns_servers))
         self.adapter_dhcp_check.setChecked(bool(adapter.dhcp_enabled))
         self.adapter_forwarding_check.setChecked(True if adapter.forwarding_enabled is None else adapter.forwarding_enabled)
+        self.adapter_ttl_icmp_check.setChecked(
+            True if adapter.ttl_exceeded_icmp_enabled is None else adapter.ttl_exceeded_icmp_enabled
+        )
         if adapter.is_loopback and not self.loopback_name_edit.text().strip():
             self.loopback_name_edit.setText(adapter.name)
         if adapter.is_virtual:
@@ -929,6 +938,18 @@ class NetworkManagerQtWindow(QMainWindow):
                 mac=self.adapter_mac_edit.text().strip(),
                 dhcp_enabled=self.adapter_dhcp_check.isChecked(),
             )
+            forwarding_plan = self.manager.plan_set_adapter_forwarding(
+                adapter,
+                self.adapter_forwarding_check.isChecked(),
+            )
+            ttl_icmp_plan = self.manager.plan_set_adapter_ttl_exceeded_icmp(
+                adapter,
+                self.adapter_ttl_icmp_check.isChecked(),
+            )
+            plan = combine_operation_plans(
+                "Update adapter settings",
+                [plan, forwarding_plan, ttl_icmp_plan],
+            )
         except (ValueError, BackendError, LookupError) as exc:
             self._error("Invalid Adapter Settings", str(exc))
             return
@@ -940,7 +961,18 @@ class NetworkManagerQtWindow(QMainWindow):
             self._info("No Adapter Selected", "Select an adapter first.")
             return
         try:
-            plan = self.manager.plan_set_adapter_forwarding(adapter, self.adapter_forwarding_check.isChecked())
+            forwarding_plan = self.manager.plan_set_adapter_forwarding(
+                adapter,
+                self.adapter_forwarding_check.isChecked(),
+            )
+            ttl_icmp_plan = self.manager.plan_set_adapter_ttl_exceeded_icmp(
+                adapter,
+                self.adapter_ttl_icmp_check.isChecked(),
+            )
+            plan = combine_operation_plans(
+                "Update adapter forwarding controls",
+                [forwarding_plan, ttl_icmp_plan],
+            )
         except (BackendError, LookupError, ValueError) as exc:
             self._error("Forwarding Error", str(exc))
             return

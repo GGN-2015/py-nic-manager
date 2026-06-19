@@ -23,7 +23,7 @@ from py_nic_manager.ping import ping_test_command
 from py_nic_manager import windows_device_policy, windows_loopback, windows_tap, windows_virtual
 from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
-from py_nic_manager import nat_persistence
+from py_nic_manager import nat_persistence, ttl_exceeded
 from py_nic_manager.models import (
     AdapterInfo,
     AddressInfo,
@@ -152,11 +152,17 @@ def test_snapshot_round_trip(tmp_path) -> None:
 
 
 def test_adapter_forwarding_round_trip() -> None:
-    adapter = AdapterInfo(id="eth0", name="eth0", forwarding_enabled=False)
+    adapter = AdapterInfo(
+        id="eth0",
+        name="eth0",
+        forwarding_enabled=False,
+        ttl_exceeded_icmp_enabled=False,
+    )
 
     loaded = AdapterInfo.from_dict(adapter.to_dict())
 
     assert loaded.forwarding_enabled is False
+    assert loaded.ttl_exceeded_icmp_enabled is False
 
 
 def test_adapter_nature_marks_physical_loopback_and_non_loopback_virtual() -> None:
@@ -380,6 +386,18 @@ def test_windows_nat_editor_is_disabled_in_both_gui_sources() -> None:
     assert "widget.setEnabled(False)" in qt_source
 
 
+def test_adapter_panel_uses_single_apply_button_for_adapter_and_forwarding_controls() -> None:
+    root = Path(__file__).resolve().parents[1] / "py_nic_manager"
+    tk_source = (root / "app.py").read_text(encoding="utf-8")
+    qt_source = (root / "qt_app.py").read_text(encoding="utf-8")
+
+    for source in (tk_source, qt_source):
+        assert "Apply Adapter Settings" in source
+        assert "Send ICMP Time Exceeded" in source
+        assert "Apply Adapter Changes" not in source
+        assert "Apply Forwarding" not in source
+
+
 def test_route_metrics_round_trip() -> None:
     route = RouteInfo(
         "0.0.0.0/0",
@@ -580,6 +598,23 @@ def test_windows_forwarding_plan_uses_netipinterface() -> None:
     assert "-Forwarding Disabled" in rendered
 
 
+def test_windows_ttl_exceeded_icmp_plan_uses_firewall_rule() -> None:
+    backend = WindowsBackend(dry_run=True)
+    adapter = AdapterInfo(id="id", name="Ethernet")
+
+    disable_plan = backend.plan_adapter_ttl_exceeded_icmp_update(adapter, False)
+    enable_plan = backend.plan_adapter_ttl_exceeded_icmp_update(adapter, True)
+
+    disable_rendered = " ".join(disable_plan.commands[0])
+    enable_rendered = " ".join(enable_plan.commands[0])
+    assert "New-NetFirewallRule" in disable_rendered
+    assert "-Protocol ICMPv4" in disable_rendered
+    assert "-IcmpType 11" in disable_rendered
+    assert "-InterfaceAlias $interfaceAlias" in disable_rendered
+    assert "Py NIC Manager TTL Exceeded Block - Ethernet" in disable_rendered
+    assert "Remove-NetFirewallRule" in enable_rendered
+
+
 def test_windows_adapter_admin_plan_uses_netadapter_admin_state() -> None:
     backend = WindowsBackend(dry_run=True)
     adapter = AdapterInfo(id="id", name="Ethernet")
@@ -712,6 +747,60 @@ def test_linux_forwarding_plan_uses_sysctl() -> None:
     plan = backend.plan_adapter_forwarding_update(adapter, False)
 
     assert plan.commands == [["sysctl", "-w", "net.ipv4.conf.eth0.forwarding=0"]]
+
+
+def test_linux_ttl_exceeded_icmp_plan_uses_helper() -> None:
+    backend = LinuxBackend(dry_run=True)
+    adapter = AdapterInfo(id="eth0", name="eth0")
+
+    plan = backend.plan_adapter_ttl_exceeded_icmp_update(adapter, False)
+
+    assert plan.commands == [
+        [sys.executable, "-m", "py_nic_manager.ttl_exceeded", "set", "eth0", "disabled"]
+    ]
+
+
+def test_linux_ttl_exceeded_icmp_state_parses_tagged_iptables_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CapturingLinuxBackend(LinuxBackend):
+        def run(self, command: list[str]) -> CommandResult:
+            assert command[-4:] == ["-t", "mangle", "-S", "PREROUTING"]
+            return CommandResult(
+                command,
+                0,
+                '-A PREROUTING -i eth0 -m ttl --ttl-eq 1 -m comment --comment "py-nic-manager-ttl-exceeded:eth0" -j DROP\n',
+                "",
+            )
+
+    monkeypatch.setattr("shutil.which", lambda value: "/usr/sbin/iptables" if value == "iptables" else None)
+
+    assert CapturingLinuxBackend(dry_run=True)._ttl_exceeded_icmp_disabled_interfaces() == {"eth0"}
+
+
+def test_linux_ttl_exceeded_helper_adds_tagged_prerouting_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    class Completed:
+        def __init__(self, returncode: int) -> None:
+            self.returncode = returncode
+            self.stdout = ""
+            self.stderr = ""
+
+    def fake_run(command: list[str], **_kwargs) -> Completed:
+        commands.append(command)
+        return Completed(1 if "-C" in command else 0)
+
+    monkeypatch.setattr(ttl_exceeded.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ttl_exceeded.shutil, "which", lambda value: "/usr/sbin/iptables" if value == "iptables" else None)
+    monkeypatch.setattr(ttl_exceeded.subprocess, "run", fake_run)
+
+    assert ttl_exceeded.set_ttl_exceeded_icmp("eth0", enabled=False) == 0
+
+    assert commands[0][:5] == ["/usr/sbin/iptables", "-t", "mangle", "-C", "PREROUTING"]
+    assert commands[1][:5] == ["/usr/sbin/iptables", "-t", "mangle", "-A", "PREROUTING"]
+    assert "--ttl-eq" in commands[1]
+    assert "!" in commands[1]
+    assert "--dst-type" in commands[1]
+    assert f"{ttl_exceeded.TTL_EXCEEDED_RULE_PREFIX}:eth0" in commands[1]
 
 
 def test_linux_global_forwarding_plan_uses_ip_forward_sysctl() -> None:
@@ -1259,6 +1348,17 @@ def test_macos_forwarding_plan_uses_packaged_pf_helper() -> None:
     ]
 
 
+def test_macos_ttl_exceeded_icmp_plan_uses_packaged_pf_helper() -> None:
+    backend = MacOSBackend(dry_run=True)
+    adapter = AdapterInfo(id="en0", name="Wi-Fi", description="en0")
+
+    plan = backend.plan_adapter_ttl_exceeded_icmp_update(adapter, False)
+
+    assert plan.commands == [
+        [sys.executable, "-m", "py_nic_manager.ttl_exceeded", "set", "en0", "disabled"]
+    ]
+
+
 def test_macos_forwarding_state_combines_global_and_disabled_interfaces() -> None:
     assert _macos_adapter_forwarding_state("en0", True, set()) is True
     assert _macos_adapter_forwarding_state("en0", True, {"en0"}) is False
@@ -1301,6 +1401,13 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
         mac="00:11:22:33:44:66",
     )
     forwarding_plan = manager.plan_set_adapter_forwarding("Ethernet", False)
+    ttl_icmp_plan = manager.plan_set_adapter_ttl_exceeded_icmp("Ethernet", False)
+    combined_adapter_plan = manager.plan_update_adapter_settings(
+        "Ethernet",
+        address="192.0.2.51/24",
+        forwarding_enabled=False,
+        ttl_exceeded_icmp_enabled=False,
+    )
     admin_plan = manager.plan_set_adapter_admin("Ethernet", False)
     global_forwarding_plan = manager.plan_set_global_forwarding(True)
     create_loopback_plan = manager.plan_create_loopback()
@@ -1338,6 +1445,9 @@ def test_python_api_covers_snapshot_and_mutating_plans(tmp_path) -> None:
     assert snapshot.adapters[0].name == "Ethernet"
     assert any("netsh" in command[0].lower() for command in adapter_plan.commands)
     assert "Set-NetIPInterface" in " ".join(forwarding_plan.commands[0])
+    assert "New-NetFirewallRule" in " ".join(ttl_icmp_plan.commands[0])
+    assert combined_adapter_plan.title == "Update adapter settings"
+    assert len(combined_adapter_plan.commands) >= 3
     assert "Disable-NetAdapter" in " ".join(admin_plan.commands[0])
     assert global_forwarding_plan.restart_required is True
     assert "IPEnableRouter" in " ".join(global_forwarding_plan.commands[0])
@@ -1428,6 +1538,7 @@ class _FakeWindowsBackend(WindowsBackend):
             dhcp_enabled=False,
             admin_enabled=True,
             forwarding_enabled=True,
+            ttl_exceeded_icmp_enabled=True,
             ),
             AdapterInfo(
                 id="loopback-id",
@@ -1438,6 +1549,7 @@ class _FakeWindowsBackend(WindowsBackend):
                 is_loopback=True,
                 admin_enabled=True,
                 forwarding_enabled=False,
+                ttl_exceeded_icmp_enabled=True,
             ),
             AdapterInfo(
                 id="virtual-id",
@@ -1449,6 +1561,7 @@ class _FakeWindowsBackend(WindowsBackend):
                 virtual_kind="wintun",
                 admin_enabled=True,
                 forwarding_enabled=True,
+                ttl_exceeded_icmp_enabled=False,
             ),
         ]
 
