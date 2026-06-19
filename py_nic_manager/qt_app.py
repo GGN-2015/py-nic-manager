@@ -58,6 +58,7 @@ from .validation import validate_ip, validate_prefix
 SORT_ROLE = Qt.ItemDataRole.UserRole
 INDEX_ROLE = Qt.ItemDataRole.UserRole.value + 1
 KEY_ROLE = Qt.ItemDataRole.UserRole.value + 2
+WINDOWS_NAT_UNSUPPORTED_MESSAGE = "NAT settings are not supported on Windows systems."
 
 
 class WorkerSignals(QObject):
@@ -573,16 +574,28 @@ class NetworkManagerQtWindow(QMainWindow):
         panel_layout.setContentsMargins(14, 14, 14, 14)
         panel_layout.setSpacing(10)
         panel_layout.addWidget(self._section_label("NAT Rule Editor"))
+        self.nat_windows_warning = QLabel(WINDOWS_NAT_UNSUPPORTED_MESSAGE)
+        self.nat_windows_warning.setObjectName("dangerText")
+        self.nat_windows_warning.setWordWrap(True)
+        self.nat_windows_warning.hide()
+        panel_layout.addWidget(self.nat_windows_warning)
 
         form = QFormLayout()
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
+        self._nat_editor_widgets: list[QWidget] = []
         self.nat_name_edit = self._line_edit("py-nat0", admin_required=True)
         self.nat_source_edit = self._line_edit("192.168.0.0/24", admin_required=True)
         self.nat_outbound_edit = self._line_edit(admin_required=True)
         self.nat_enabled_check = QCheckBox("Enable NAT rule")
         self.nat_enabled_check.setChecked(True)
         self._admin_only_widgets.append(self.nat_enabled_check)
+        self._nat_editor_widgets.extend([
+            self.nat_name_edit,
+            self.nat_source_edit,
+            self.nat_outbound_edit,
+            self.nat_enabled_check,
+        ])
         form.addRow("Name", self.nat_name_edit)
         form.addRow("Source CIDR", self.nat_source_edit)
         form.addRow("Outbound Interface", self.nat_outbound_edit)
@@ -597,6 +610,7 @@ class NetworkManagerQtWindow(QMainWindow):
         self.delete_nat_button = QPushButton("Delete Selected NAT Rule")
         self.delete_nat_button.clicked.connect(self.delete_selected_nat_rule)
         self._admin_only_widgets.extend([self.add_nat_button, self.update_nat_button, self.delete_nat_button])
+        self._nat_editor_widgets.extend([self.add_nat_button, self.update_nat_button, self.delete_nat_button])
         panel_layout.addWidget(self.add_nat_button)
         panel_layout.addWidget(self.update_nat_button)
         panel_layout.addWidget(self.delete_nat_button)
@@ -707,6 +721,11 @@ class NetworkManagerQtWindow(QMainWindow):
             widget.setEnabled(enabled)
             if not enabled:
                 widget.setToolTip("Restart Py NIC Manager as Administrator/root to change network settings.")
+        if self.manager.backend_name == "Windows":
+            self.nat_windows_warning.show()
+            for widget in self._nat_editor_widgets:
+                widget.setEnabled(False)
+                widget.setToolTip(WINDOWS_NAT_UNSUPPORTED_MESSAGE)
 
     def refresh_all(self) -> None:
         self.statusBar().showMessage("Loading adapters and routes...")

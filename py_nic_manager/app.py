@@ -28,6 +28,9 @@ from .ui_tables import route_cell_text, route_table_columns
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
 
+WINDOWS_NAT_UNSUPPORTED_MESSAGE = "NAT settings are not supported on Windows systems."
+
+
 class NetworkManagerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -411,23 +414,34 @@ class NetworkManagerApp(tk.Tk):
         self.nat_source_var = tk.StringVar(value="192.168.0.0/24")
         self.nat_outbound_var = tk.StringVar()
         self.nat_enabled_var = tk.BooleanVar(value=True)
+        self._nat_editor_widgets: list[tk.Widget] = []
 
-        self._labeled_entry(panel, "Name", self.nat_name_var, 1, admin_required=True)
-        self._labeled_entry(panel, "Source CIDR", self.nat_source_var, 2, admin_required=True)
-        self._labeled_entry(panel, "Outbound Interface", self.nat_outbound_var, 3, admin_required=True)
+        self.nat_warning_label = ttk.Label(panel, text=WINDOWS_NAT_UNSUPPORTED_MESSAGE, style="Danger.TLabel")
+        self.nat_warning_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.nat_warning_label.grid_remove()
+
+        self._nat_editor_widgets.append(self._labeled_entry(panel, "Name", self.nat_name_var, 2, admin_required=True))
+        self._nat_editor_widgets.append(self._labeled_entry(panel, "Source CIDR", self.nat_source_var, 3, admin_required=True))
+        self._nat_editor_widgets.append(
+            self._labeled_entry(panel, "Outbound Interface", self.nat_outbound_var, 4, admin_required=True)
+        )
         self.nat_enabled_check = ttk.Checkbutton(panel, text="Enable NAT rule", variable=self.nat_enabled_var)
-        self.nat_enabled_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self.nat_enabled_check.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 10))
         self._admin_only_widgets.append(self.nat_enabled_check)
+        self._nat_editor_widgets.append(self.nat_enabled_check)
 
         self.add_nat_button = ttk.Button(panel, text="Add NAT Rule", command=self.add_nat_rule)
-        self.add_nat_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        self.add_nat_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 6))
         self._admin_only_widgets.append(self.add_nat_button)
+        self._nat_editor_widgets.append(self.add_nat_button)
         self.update_nat_button = ttk.Button(panel, text="Update Selected NAT Rule", command=self.update_selected_nat_rule)
-        self.update_nat_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=6)
+        self.update_nat_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=6)
         self._admin_only_widgets.append(self.update_nat_button)
+        self._nat_editor_widgets.append(self.update_nat_button)
         self.delete_nat_button = ttk.Button(panel, text="Delete Selected NAT Rule", command=self.delete_selected_nat_rule)
-        self.delete_nat_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=6)
+        self.delete_nat_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=6)
         self._admin_only_widgets.append(self.delete_nat_button)
+        self._nat_editor_widgets.append(self.delete_nat_button)
 
     def _build_config_tab(self) -> None:
         self.config_tab.columnconfigure(0, weight=1)
@@ -486,6 +500,10 @@ class NetworkManagerApp(tk.Tk):
         state = "normal" if self.is_admin else "disabled"
         for widget in self._admin_only_widgets:
             widget.configure(state=state)
+        if self.backend.name == "Windows":
+            self.nat_warning_label.grid()
+            for widget in self._nat_editor_widgets:
+                widget.configure(state="disabled")
 
     def refresh_all(self) -> None:
         self.status_var.set("Loading adapters and routes...")

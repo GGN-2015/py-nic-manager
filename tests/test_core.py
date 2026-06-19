@@ -364,6 +364,22 @@ def test_tkinter_gui_uses_locale_independent_message_dialog() -> None:
     assert 'text="OK"' not in app_source
 
 
+def test_windows_nat_editor_is_disabled_in_both_gui_sources() -> None:
+    root = Path(__file__).resolve().parents[1] / "py_nic_manager"
+    tk_source = (root / "app.py").read_text(encoding="utf-8")
+    qt_source = (root / "qt_app.py").read_text(encoding="utf-8")
+    message = "NAT settings are not supported on Windows systems."
+
+    assert message in tk_source
+    assert message in qt_source
+    assert 'self.backend.name == "Windows"' in tk_source
+    assert 'self.manager.backend_name == "Windows"' in qt_source
+    assert "self._nat_editor_widgets" in tk_source
+    assert "self._nat_editor_widgets" in qt_source
+    assert 'widget.configure(state="disabled")' in tk_source
+    assert "widget.setEnabled(False)" in qt_source
+
+
 def test_route_metrics_round_trip() -> None:
     route = RouteInfo(
         "0.0.0.0/0",
