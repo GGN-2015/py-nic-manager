@@ -489,7 +489,8 @@ for line in process.stdout:
     print(line.decode(errors="replace"), end="")
 ```
 
-Windows uses `ping -S <src> <dest>`. Linux uses `ping -I <src> <dest>`.
+Windows uses `ping -S <src> <dest>`. Linux uses
+`ping -I <src> -c4 <dest>` so the test sends at most four requests.
 
 ## Route Operations
 

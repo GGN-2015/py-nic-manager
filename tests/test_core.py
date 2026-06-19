@@ -98,6 +98,7 @@ def test_ping_test_command_is_platform_specific() -> None:
         "ping",
         "-I",
         "192.0.2.10",
+        "-c4",
         "198.51.100.1",
     ]
 

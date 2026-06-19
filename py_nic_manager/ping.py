@@ -14,7 +14,7 @@ def ping_test_command(backend_name: str, src_ip_addr: str, dest_ip_addr: str) ->
     if backend_name == "Windows":
         return ["ping", "-S", src, dest]
     if backend_name == "Linux":
-        return ["ping", "-I", src, dest]
+        return ["ping", "-I", src, "-c4", dest]
     if backend_name == "macOS":
         return ["ping", "-S", src, dest]
     return ["ping", "-I", src, dest]
