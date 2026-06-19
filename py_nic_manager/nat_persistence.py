@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,11 +36,9 @@ def save_rules(rules: list[dict[str, Any]]) -> None:
 
 
 def add_rule(name: str, source_cidr: str, outbound_interface: str, enabled: bool) -> None:
-    rules = [
-        rule
-        for rule in load_rules()
-        if str(rule.get("name", "")).strip().lower() != name.strip().lower()
-    ]
+    rules = load_rules()
+    if any(str(rule.get("name", "")).strip().lower() == name.strip().lower() for rule in rules):
+        raise RuntimeError(f"A NAT rule named '{name}' already exists.")
     rules.append(
         {
             "name": name,
@@ -93,7 +92,7 @@ def _apply_linux_rules(rules: list[dict[str, Any]]) -> None:
     _run([iptables, "-t", "nat", "-S", "POSTROUTING"], allow_failure=True)
     for line in _iptables_postrouting_rules(iptables):
         if marker in line:
-            parts = line.split()
+            parts = shlex.split(line)
             delete_args = ["-t", "nat", "-D", "POSTROUTING", *parts[2:]]
             _run([iptables, *delete_args], allow_failure=True)
     for rule in rules:

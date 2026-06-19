@@ -568,6 +568,9 @@ results = manager.create_nat_rule(
 )
 ```
 
+NAT rule names are unique. Creating a rule with an existing name raises an
+error instead of silently replacing the old rule.
+
 The `outbound_interface` argument is always the outbound/public interface name
 from the user's point of view. On Windows, Py NIC Manager uses RRAS NAT when
 available, falls back to WinNAT source-prefix NAT, and then falls back to

@@ -280,6 +280,9 @@ class BaseBackend(ABC):
     def restart_system(self) -> CommandResult:
         return self.run_plan(self.plan_restart_system())[0]
 
+    def ensure_nat_rule_name_available(self, name: str, *, replacing_name: str = "") -> None:
+        _ensure_nat_rule_name_available(self.list_nat_rules(), name, replacing_name=replacing_name)
+
     def run(self, command: list[str]) -> CommandResult:
         if self.dry_run:
             return CommandResult(command=command, returncode=0)
@@ -2546,6 +2549,23 @@ def _merge_nat_rules(managed: list[NatRule], runtime: list[NatRule]) -> list[Nat
     for rule in managed:
         merged[(rule.source_cidr.lower(), rule.outbound_interface.lower(), rule.name.lower())] = rule
     return sorted(merged.values(), key=lambda rule: (not rule.managed, rule.name.lower(), rule.source_cidr.lower()))
+
+
+def _ensure_nat_rule_name_available(
+    rules: list[NatRule],
+    name: str,
+    *,
+    replacing_name: str = "",
+) -> None:
+    candidate = name.strip()
+    if not candidate:
+        raise BackendError("A NAT rule name is required.")
+    candidate_key = candidate.lower()
+    replacement_key = replacing_name.strip().lower()
+    for rule in rules:
+        existing_key = rule.name.strip().lower()
+        if existing_key == candidate_key and existing_key != replacement_key:
+            raise BackendError(f"A NAT rule named '{candidate}' already exists.")
 
 
 def _parse_iptables_nat_rules(output: str) -> list[NatRule]:

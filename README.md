@@ -39,7 +39,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
   on Windows, where those values are reported by the backend.
 - View, add, update, and delete persistent IPv4 NAT rules. Supported NAT rules
   masquerade traffic from a source CIDR when it leaves through the selected
-  outbound interface or system-selected external route.
+  outbound interface or system-selected external route. NAT rule names must be
+  unique and duplicates are rejected before a rule is created.
 - Enable or disable global IPv4 router forwarding on supported systems.
 - Enable or disable IPv4 router forwarding for a selected adapter where the
   operating system backend supports per-interface forwarding.

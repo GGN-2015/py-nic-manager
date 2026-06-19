@@ -23,6 +23,7 @@ from py_nic_manager.ping import ping_test_command
 from py_nic_manager import windows_device_policy, windows_loopback, windows_tap, windows_virtual
 from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
+from py_nic_manager import nat_persistence
 from py_nic_manager.models import (
     AdapterInfo,
     AddressInfo,
@@ -758,6 +759,88 @@ def test_linux_nat_plan_uses_persistent_helper_without_restart() -> None:
     assert "--source-cidr" in plan.commands[0]
     assert "192.168.0.0/24" in plan.commands[0]
     assert "--outbound-interface" in plan.commands[0]
+
+
+def test_linux_nat_runtime_delete_uses_shell_aware_iptables_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = '-A POSTROUTING -s 192.168.0.0/24 -o eth0 -m comment --comment "py-nic-manager-nat:nat 0" -j MASQUERADE\n'
+        stderr = ""
+
+    monkeypatch.setattr(nat_persistence.shutil, "which", lambda name: "/sbin/iptables" if name == "iptables" else None)
+    monkeypatch.setattr(nat_persistence, "load_rules", lambda: [])
+    monkeypatch.setattr(nat_persistence.subprocess, "run", lambda command, **_kwargs: commands.append(command) or Completed())
+    monkeypatch.setattr(nat_persistence, "_install_linux_service", lambda: None)
+
+    nat_persistence._apply_linux_rules([])
+
+    delete_commands = [command for command in commands if "-D" in command]
+    assert delete_commands == [
+        [
+            "/sbin/iptables",
+            "-t",
+            "nat",
+            "-D",
+            "POSTROUTING",
+            "-s",
+            "192.168.0.0/24",
+            "-o",
+            "eth0",
+            "-m",
+            "comment",
+            "--comment",
+            "py-nic-manager-nat:nat 0",
+            "-j",
+            "MASQUERADE",
+        ]
+    ]
+
+
+def test_nat_persistence_add_rule_rejects_duplicate_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        nat_persistence,
+        "load_rules",
+        lambda: [{"name": "nat0", "source_cidr": "192.168.0.0/24", "outbound_interface": "eth0"}],
+    )
+
+    with pytest.raises(RuntimeError, match="already exists"):
+        nat_persistence.add_rule("NAT0", "192.168.1.0/24", "eth1", True)
+
+
+def test_python_api_rejects_duplicate_nat_rule_names() -> None:
+    manager = NetworkManager(_FakeWindowsBackend(dry_run=True), admin_checker=lambda: True)
+
+    with pytest.raises(BackendError, match="already exists"):
+        manager.plan_create_nat_rule("NAT0", "192.168.10.0/24", outbound_interface="Ethernet")
+
+
+def test_python_api_allows_nat_update_to_keep_name_but_rejects_other_duplicate() -> None:
+    class MultiNatBackend(_FakeWindowsBackend):
+        def list_nat_rules(self):
+            return [
+                NatRule("nat0", "192.168.0.0/24", "Ethernet"),
+                NatRule("nat1", "192.168.1.0/24", "Ethernet"),
+            ]
+
+    manager = NetworkManager(MultiNatBackend(dry_run=True), admin_checker=lambda: True)
+
+    keep_name_plan = manager.plan_update_nat_rule(
+        "nat0",
+        "NAT0",
+        "192.168.10.0/24",
+        outbound_interface="Ethernet",
+    )
+
+    assert keep_name_plan.title == "Update NAT rule"
+    with pytest.raises(BackendError, match="already exists"):
+        manager.plan_update_nat_rule(
+            "nat0",
+            "nat1",
+            "192.168.10.0/24",
+            outbound_interface="Ethernet",
+        )
 
 
 def test_windows_virtual_adapter_plan_uses_tap_first_helper() -> None:

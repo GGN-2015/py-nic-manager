@@ -515,14 +515,14 @@ class NetworkManager:
         outbound_interface: str = "",
         enabled: bool = True,
     ) -> OperationPlan:
-        return self.backend.plan_nat_create(
-            _coerce_nat_rule(
-                name,
-                source_cidr,
-                outbound_interface=outbound_interface,
-                enabled=enabled,
-            )
+        rule = _coerce_nat_rule(
+            name,
+            source_cidr,
+            outbound_interface=outbound_interface,
+            enabled=enabled,
         )
+        self.backend.ensure_nat_rule_name_available(rule.name)
+        return self.backend.plan_nat_create(rule)
 
     def create_nat_rule(
         self,
@@ -552,14 +552,17 @@ class NetworkManager:
         outbound_interface: str = "",
         enabled: bool = True,
     ) -> OperationPlan:
+        current = self.find_nat_rule(old_rule)
+        new_rule = _coerce_nat_rule(
+            name,
+            source_cidr,
+            outbound_interface=outbound_interface,
+            enabled=enabled,
+        )
+        self.backend.ensure_nat_rule_name_available(new_rule.name, replacing_name=current.name)
         return self.backend.plan_nat_update(
-            self.find_nat_rule(old_rule),
-            _coerce_nat_rule(
-                name,
-                source_cidr,
-                outbound_interface=outbound_interface,
-                enabled=enabled,
-            ),
+            current,
+            new_rule,
         )
 
     def update_nat_rule(

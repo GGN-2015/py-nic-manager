@@ -939,6 +939,7 @@ class NetworkManagerApp(tk.Tk):
     def add_nat_rule(self) -> None:
         try:
             rule = self._nat_rule_from_form()
+            self.backend.ensure_nat_rule_name_available(rule.name)
             plan = self.backend.plan_nat_create(rule)
         except (ValueError, BackendError) as exc:
             self._show_message("Invalid NAT Rule", str(exc), kind="error")
@@ -952,6 +953,7 @@ class NetworkManagerApp(tk.Tk):
             return
         try:
             new_rule = self._nat_rule_from_form()
+            self.backend.ensure_nat_rule_name_available(new_rule.name, replacing_name=old_rule.name)
             plan = self.backend.plan_nat_update(old_rule, new_rule)
         except (ValueError, BackendError) as exc:
             self._show_message("Invalid NAT Rule", str(exc), kind="error")
