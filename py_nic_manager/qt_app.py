@@ -254,9 +254,22 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self.adapter_table = QTableWidget(0, 11)
+        self.adapter_table = QTableWidget(0, 12)
         self.adapter_table.setHorizontalHeaderLabels(
-            ["Adapter", "Index", "Status", "Admin", "IP Forwarding", "ICS Compatible", "IPv4", "MAC", "Gateway", "DNS", "Type"]
+            [
+                "Adapter",
+                "Index",
+                "Status",
+                "Admin",
+                "IP Forwarding",
+                "ICS Compatible",
+                "IPv4",
+                "MAC",
+                "Gateway",
+                "DNS",
+                "NIC Nature",
+                "Type",
+            ]
         )
         self._configure_table(self.adapter_table)
         self.adapter_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
@@ -270,7 +283,8 @@ class NetworkManagerQtWindow(QMainWindow):
         self.adapter_table.setColumnWidth(7, 145)
         self.adapter_table.setColumnWidth(8, 140)
         self.adapter_table.setColumnWidth(9, 210)
-        self.adapter_table.setColumnWidth(10, 95)
+        self.adapter_table.setColumnWidth(10, 165)
+        self.adapter_table.setColumnWidth(11, 95)
         self.adapter_table.itemSelectionChanged.connect(self._on_adapter_select)
         splitter.addWidget(self.adapter_table)
 
@@ -655,9 +669,23 @@ class NetworkManagerQtWindow(QMainWindow):
                 adapter.mac,
                 ", ".join(adapter.gateways),
                 ", ".join(adapter.dns_servers),
+                adapter.nature,
                 _adapter_kind(adapter),
             ]
-            sort_columns = ["name", "index", "status", "admin", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"]
+            sort_columns = [
+                "name",
+                "index",
+                "status",
+                "admin",
+                "forwarding",
+                "ics",
+                "ipv4",
+                "mac",
+                "gateway",
+                "dns",
+                "nature",
+                "kind",
+            ]
             for column, value in enumerate(values):
                 item = _table_item(
                     value,

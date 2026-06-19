@@ -19,7 +19,7 @@ from py_nic_manager import NetworkManager
 manager = NetworkManager()
 
 for adapter in manager.list_adapters(sort_by="name"):
-    print(adapter.name, adapter.mac, adapter.admin_enabled, adapter.forwarding_enabled)
+    print(adapter.name, adapter.nature, adapter.mac, adapter.admin_enabled, adapter.forwarding_enabled)
 
 print("Global IPv4 forwarding:", manager.get_global_forwarding_enabled())
 
@@ -219,6 +219,7 @@ Adapter sort columns:
 - `mac`
 - `gateway`
 - `dns`
+- `nature`
 - `kind`
 
 Route sort columns:
@@ -450,10 +451,9 @@ manager.delete_virtual_adapter("py-virtual0")
 
 Platform behavior matches the GUI:
 
-- Windows uses the bundled Wintun DLLs and a startup task. Wintun is a
-  non-loopback, non-Hyper-V layer-3 virtual NIC. Py NIC Manager bundles the
-  official Wintun 0.14.1 DLLs for amd64, x86, arm, and arm64 plus the Wintun
-  prebuilt-binaries license.
+- Windows tries the bundled TAP-Windows6 assets first because TAP is
+  Ethernet-like and preferred for ICS private sharing, then falls back to the
+  bundled Wintun DLLs. Both paths create non-loopback, non-Hyper-V virtual NICs.
 - Linux creates a `veth` pair and assigns the requested IPv4 CIDR to the
   primary side. Attach the peer side to a namespace, container, bridge, or test
   stack as needed.

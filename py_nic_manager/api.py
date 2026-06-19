@@ -15,6 +15,7 @@ from .models import (
     AdapterInfo,
     AddressInfo,
     CommandResult,
+    NIC_NATURE_PHYSICAL,
     NatRule,
     NetworkSnapshot,
     OperationPlan,
@@ -30,7 +31,20 @@ NatRef = NatRule | str
 VirtualAdapterRef = VirtualAdapterInfo | str | int
 SnapshotRef = NetworkSnapshot | str | Path
 
-ADAPTER_SORT_COLUMNS = {"index", "name", "status", "admin", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind"}
+ADAPTER_SORT_COLUMNS = {
+    "index",
+    "name",
+    "status",
+    "admin",
+    "forwarding",
+    "ics",
+    "ipv4",
+    "mac",
+    "gateway",
+    "dns",
+    "nature",
+    "kind",
+}
 ROUTE_SORT_COLUMNS = {
     "destination",
     "gateway",
@@ -647,6 +661,7 @@ def adapter_sort_key(adapter: AdapterInfo, *, sort_by: str = "index", index: int
         "mac": adapter.mac,
         "gateway": ", ".join(adapter.gateways),
         "dns": ", ".join(adapter.dns_servers),
+        "nature": adapter.nature,
         "kind": _adapter_kind(adapter),
     }
     if sort_by == "ipv4" and ipv4 is not None:
@@ -808,7 +823,7 @@ def _adapter_kind(adapter: AdapterInfo) -> str:
         return "Loopback"
     if adapter.is_virtual:
         return f"Virtual ({adapter.virtual_kind})" if adapter.virtual_kind else "Virtual"
-    return "Physical"
+    return NIC_NATURE_PHYSICAL
 
 
 def _future_result_or(future, fallback):

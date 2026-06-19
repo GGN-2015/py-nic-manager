@@ -26,6 +26,9 @@ from py_nic_manager.models import (
     AdapterInfo,
     AddressInfo,
     CommandResult,
+    NIC_NATURE_LOOPBACK,
+    NIC_NATURE_PHYSICAL,
+    NIC_NATURE_VIRTUAL,
     NatRule,
     NetworkSnapshot,
     OperationPlan,
@@ -121,6 +124,17 @@ def test_adapter_forwarding_round_trip() -> None:
     loaded = AdapterInfo.from_dict(adapter.to_dict())
 
     assert loaded.forwarding_enabled is False
+
+
+def test_adapter_nature_marks_physical_loopback_and_non_loopback_virtual() -> None:
+    physical = AdapterInfo(id="eth0", name="eth0")
+    loopback = AdapterInfo(id="lo", name="lo", is_loopback=True)
+    virtual = AdapterInfo(id="tap0", name="tap0", is_virtual=True, virtual_kind="tap")
+
+    assert physical.nature == NIC_NATURE_PHYSICAL
+    assert loopback.nature == NIC_NATURE_LOOPBACK
+    assert virtual.nature == NIC_NATURE_VIRTUAL
+    assert AdapterInfo.from_dict(virtual.to_dict()).nature == NIC_NATURE_VIRTUAL
 
 
 def test_loopback_suggestion_skips_existing_adapter_names() -> None:
@@ -371,6 +385,18 @@ def test_adapter_ics_sort_column_is_available_in_public_api() -> None:
     ordered = api_sort_adapters(adapters, sort_by="ics")
 
     assert [adapter.name for adapter in ordered] == ["Ethernet", "py-wintun", "py-tap"]
+
+
+def test_adapter_nature_sort_column_is_available_in_public_api() -> None:
+    adapters = [
+        AdapterInfo("virtual-id", "py-tap", is_virtual=True, virtual_kind="tap"),
+        AdapterInfo("physical-id", "Ethernet"),
+        AdapterInfo("loopback-id", "py-loopback0", is_loopback=True),
+    ]
+
+    ordered = api_sort_adapters(adapters, sort_by="nature")
+
+    assert [adapter.name for adapter in ordered] == ["py-loopback0", "py-tap", "Ethernet"]
 
 
 def test_windows_adapter_plan_contains_netsh_and_mac_property() -> None:

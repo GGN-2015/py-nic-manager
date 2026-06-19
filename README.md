@@ -19,8 +19,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 
 ## Features
 
-- View network adapters, non-loopback virtual NICs, IPv4 addresses, MAC
-  addresses, gateways, DNS servers,
+- View network adapters, each adapter's NIC nature, non-loopback virtual NICs,
+  IPv4 addresses, MAC addresses, gateways, DNS servers,
   DHCP state, administrative enable/disable state, global and per-adapter IPv4
   router-forwarding state, and loopback status.
 - Edit existing adapter IPv4 address, prefix length, gateway, DNS servers, MAC
@@ -152,9 +152,10 @@ license in `py_nic_manager/assets/tap-windows6/COPYRIGHT.GPL`; Wintun binaries
 keep their WireGuard LLC prebuilt-binaries license in
 `py_nic_manager/assets/wintun/LICENSE.txt`.
 Py NIC Manager sets created TAP adapters to TAP's "Always Connected" media
-mode. The table still separates `Status` from `Admin`: `Status` is Windows'
-media/link state, while `Admin` is the enable/disable state controlled by the
-Enable/Disable buttons.
+mode. The adapter table marks each entry as `Physical NIC`, `Loopback`, or
+`Non-loopback Virtual NIC`. The table still separates `Status` from `Admin`:
+`Status` is Windows' media/link state, while `Admin` is the enable/disable state
+controlled by the Enable/Disable buttons.
 After assigning the requested IPv4 address, virtual NIC creation verifies that
 the local host can ping that address. If the check fails, creation fails instead
 of treating an unusable virtual NIC as successful.

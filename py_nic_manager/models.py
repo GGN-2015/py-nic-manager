@@ -6,6 +6,17 @@ from typing import Any
 
 
 CONFIG_SCHEMA_VERSION = 1
+NIC_NATURE_PHYSICAL = "Physical NIC"
+NIC_NATURE_LOOPBACK = "Loopback"
+NIC_NATURE_VIRTUAL = "Non-loopback Virtual NIC"
+
+
+def classify_nic_nature(*, is_loopback: bool, is_virtual: bool) -> str:
+    if is_loopback:
+        return NIC_NATURE_LOOPBACK
+    if is_virtual:
+        return NIC_NATURE_VIRTUAL
+    return NIC_NATURE_PHYSICAL
 
 
 @dataclass(slots=True)
@@ -84,9 +95,17 @@ class AdapterInfo:
     is_loopback: bool = False
     is_virtual: bool = False
     virtual_kind: str = ""
+    nic_nature: str = ""
     forwarding_enabled: bool | None = None
     ics_compatible: bool | None = None
     ics_note: str = ""
+
+    @property
+    def nature(self) -> str:
+        return self.nic_nature or classify_nic_nature(
+            is_loopback=self.is_loopback,
+            is_virtual=self.is_virtual,
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AdapterInfo":
@@ -108,6 +127,7 @@ class AdapterInfo:
             is_loopback=bool(data.get("is_loopback", False)),
             is_virtual=bool(data.get("is_virtual", False)),
             virtual_kind=str(data.get("virtual_kind", "")),
+            nic_nature=str(data.get("nic_nature", "")),
             forwarding_enabled=_optional_bool(data.get("forwarding_enabled")),
             ics_compatible=_optional_bool(data.get("ics_compatible")),
             ics_note=str(data.get("ics_note", "")),
@@ -128,6 +148,7 @@ class AdapterInfo:
             "is_loopback": self.is_loopback,
             "is_virtual": self.is_virtual,
             "virtual_kind": self.virtual_kind,
+            "nic_nature": self.nature,
             "forwarding_enabled": self.forwarding_enabled,
             "ics_compatible": self.ics_compatible,
             "ics_note": self.ics_note,

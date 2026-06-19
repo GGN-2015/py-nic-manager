@@ -177,7 +177,19 @@ class NetworkManagerApp(tk.Tk):
     def _build_adapters_tab(self) -> None:
         self.adapters_paned, table_frame, panel = self._build_split_tab(self.adapters_tab)
 
-        columns = ("index", "status", "admin", "forwarding", "ics", "ipv4", "mac", "gateway", "dns", "kind")
+        columns = (
+            "index",
+            "status",
+            "admin",
+            "forwarding",
+            "ics",
+            "ipv4",
+            "mac",
+            "gateway",
+            "dns",
+            "nature",
+            "kind",
+        )
         self.adapter_tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -194,6 +206,7 @@ class NetworkManagerApp(tk.Tk):
         self._set_adapter_heading("mac", "MAC", "mac")
         self._set_adapter_heading("gateway", "Gateway", "gateway")
         self._set_adapter_heading("dns", "DNS", "dns")
+        self._set_adapter_heading("nature", "NIC Nature", "nature")
         self._set_adapter_heading("kind", "Type", "kind")
         self.adapter_tree.column("#0", width=190, minwidth=160)
         self.adapter_tree.column("index", width=70, anchor="center")
@@ -205,6 +218,7 @@ class NetworkManagerApp(tk.Tk):
         self.adapter_tree.column("mac", width=145)
         self.adapter_tree.column("gateway", width=140)
         self.adapter_tree.column("dns", width=190)
+        self.adapter_tree.column("nature", width=165, anchor="center")
         self.adapter_tree.column("kind", width=90, anchor="center")
         self.adapter_tree.bind("<<TreeviewSelect>>", self._on_adapter_select)
         self._grid_scrollable_tree(table_frame, self.adapter_tree)
@@ -546,6 +560,7 @@ class NetworkManagerApp(tk.Tk):
                     adapter.mac,
                     ", ".join(adapter.gateways),
                     ", ".join(adapter.dns_servers),
+                    adapter.nature,
                     _adapter_kind(adapter),
                 ),
             )
@@ -571,6 +586,7 @@ class NetworkManagerApp(tk.Tk):
             "mac": ("mac", "MAC"),
             "gateway": ("gateway", "Gateway"),
             "dns": ("dns", "DNS"),
+            "nature": ("nature", "NIC Nature"),
             "kind": ("kind", "Type"),
         }
         for sort_column, (column_id, label) in labels.items():
@@ -609,6 +625,7 @@ class NetworkManagerApp(tk.Tk):
             "mac": adapter.mac,
             "gateway": ", ".join(adapter.gateways),
             "dns": ", ".join(adapter.dns_servers),
+            "nature": adapter.nature,
             "kind": _adapter_kind(adapter),
         }
         if column == "index":
