@@ -73,7 +73,10 @@ python -m pip install -e .
 
 The project depends on
 [`is-admin-user`](https://pypi.org/project/is-admin-user/) for privilege
-detection. PyQt6 is installed only on Windows for the default Windows GUI.
+detection and [`py-admin-launch`](https://pypi.org/project/py-admin-launch/)
+for relaunching the installed `py-nic-manager` command with administrator
+privileges when needed. PyQt6 is installed only on Windows for the default
+Windows GUI.
 
 ## Running
 

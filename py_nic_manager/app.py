@@ -176,10 +176,44 @@ class NetworkManagerApp(tk.Tk):
         paned = ttk.Panedwindow(tab, orient=tk.HORIZONTAL)
         paned.grid(row=0, column=0, sticky="nsew")
         table_frame = ttk.Frame(paned, width=720)
-        panel = ttk.Frame(paned, padding=(12, 0, 0, 0), width=320)
+        panel_container, panel = self._scrollable_side_panel(paned)
         paned.add(table_frame, weight=3)
-        paned.add(panel, weight=1)
+        paned.add(panel_container, weight=1)
         return paned, table_frame, panel
+
+    def _scrollable_side_panel(self, parent: ttk.Panedwindow) -> tuple[ttk.Frame, ttk.Frame]:
+        container = ttk.Frame(parent, width=320)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(container, highlightthickness=0, borderwidth=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        panel = ttk.Frame(canvas, padding=(12, 0, 0, 0), width=320)
+        window_id = canvas.create_window((0, 0), window=panel, anchor="nw")
+
+        def update_scroll_region(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def update_window_width(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def wheel(event: tk.Event) -> str:
+            delta = -1 if getattr(event, "delta", 0) > 0 else 1
+            if getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            canvas.yview_scroll(delta, "units")
+            return "break"
+
+        panel.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", update_window_width)
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            canvas.bind(sequence, wheel)
+            panel.bind(sequence, wheel)
+        return container, panel
 
     def _grid_scrollable_tree(self, parent: ttk.Frame, tree: ttk.Treeview) -> None:
         parent.columnconfigure(0, weight=1)

@@ -22,7 +22,14 @@ from py_nic_manager.io import import_snapshot
 from py_nic_manager.ping import ping_test_command
 from py_nic_manager import windows_device_policy, windows_loopback, windows_tap, windows_virtual
 from py_nic_manager import windows_wintun
-from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
+from py_nic_manager.__main__ import (
+    ELEVATION_GUARD_ENV,
+    _admin_relaunch_command,
+    _gui_preference,
+    _qt_runtime_available,
+    _qt_supported_on_current_platform,
+    _should_relaunch_as_admin,
+)
 from py_nic_manager import nat_persistence, ttl_exceeded
 from py_nic_manager.models import (
     AdapterInfo,
@@ -323,6 +330,17 @@ def test_gui_preference_env_values() -> None:
     assert _gui_preference({"PY_NIC_MANAGER_GUI": "surprise"}) == "auto"
 
 
+def test_non_admin_launch_uses_py_admin_launch_package_entrypoint(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda value: None)
+
+    command = _admin_relaunch_command(["--flag"], cwd="C:\\work", entrypoint="py-nic-manager")
+
+    assert command == ["py-admin-launch", "--cwd", "C:\\work", "--", "py-nic-manager", "--flag"]
+    assert _should_relaunch_as_admin({}, admin_checker=lambda: False) is True
+    assert _should_relaunch_as_admin({ELEVATION_GUARD_ENV: "1"}, admin_checker=lambda: False) is False
+    assert _should_relaunch_as_admin({}, admin_checker=lambda: True) is False
+
+
 def test_qt_auto_mode_is_windows_only(monkeypatch) -> None:
     monkeypatch.setattr("platform.system", lambda: "Windows")
     assert _qt_supported_on_current_platform() is True
@@ -426,6 +444,16 @@ def test_adapter_table_has_runtime_comment_column_in_both_gui_sources() -> None:
     assert "adapter.comment" in tk_source
     assert '"Comment"' in qt_source
     assert "adapter.comment" in qt_source
+
+
+def test_tk_side_control_panel_has_vertical_scrollbar() -> None:
+    root = Path(__file__).resolve().parents[1] / "py_nic_manager"
+    tk_source = (root / "app.py").read_text(encoding="utf-8")
+
+    assert "def _scrollable_side_panel" in tk_source
+    assert 'ttk.Scrollbar(container, orient="vertical", command=canvas.yview)' in tk_source
+    assert 'canvas.configure(yscrollcommand=scrollbar.set)' in tk_source
+    assert "paned.add(panel_container, weight=1)" in tk_source
 
 
 def test_route_metrics_round_trip() -> None:
