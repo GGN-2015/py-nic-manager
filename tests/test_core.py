@@ -30,7 +30,7 @@ from py_nic_manager.__main__ import (
     _qt_supported_on_current_platform,
     _should_relaunch_as_admin,
 )
-from py_nic_manager import nat_persistence, ttl_exceeded
+from py_nic_manager import global_forwarding, nat_persistence, ttl_exceeded
 from py_nic_manager.models import (
     AdapterInfo,
     AddressInfo,
@@ -861,13 +861,44 @@ def test_linux_ttl_exceeded_helper_adds_tagged_prerouting_rule(monkeypatch: pyte
     assert f"{ttl_exceeded.TTL_EXCEEDED_RULE_PREFIX}:eth0" in commands[1]
 
 
-def test_linux_global_forwarding_plan_uses_ip_forward_sysctl() -> None:
+def test_linux_global_forwarding_plan_uses_persistent_helper_without_restart() -> None:
     backend = LinuxBackend(dry_run=True)
 
     plan = backend.plan_global_forwarding_update(False)
 
-    assert plan.restart_required is True
-    assert plan.commands == [["sysctl", "-w", "net.ipv4.ip_forward=0"]]
+    assert plan.restart_required is False
+    assert plan.commands == [
+        [sys.executable, "-m", "py_nic_manager.global_forwarding", "set", "disabled"]
+    ]
+
+
+def test_linux_global_forwarding_helper_persists_state_and_installs_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_dir = tmp_path / "etc" / "py-nic-manager"
+    state_file = app_dir / "global-forwarding.json"
+    service_file = tmp_path / "etc" / "systemd" / "system" / "py-nic-manager-global-forwarding.service"
+    sysctl_file = tmp_path / "etc" / "sysctl.d" / "99-py-nic-manager-global-forwarding.conf"
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(global_forwarding.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(global_forwarding, "APP_DIR", app_dir)
+    monkeypatch.setattr(global_forwarding, "STATE_FILE", state_file)
+    monkeypatch.setattr(global_forwarding, "LINUX_SERVICE_FILE", service_file)
+    monkeypatch.setattr(global_forwarding, "SYSCTL_FILE", sysctl_file)
+    monkeypatch.setattr(global_forwarding.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.setattr(global_forwarding, "_run", lambda command: commands.append(command))
+
+    global_forwarding.set_global_forwarding(True)
+
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {"enabled": True}
+    assert "net.ipv4.ip_forward = 1" in sysctl_file.read_text(encoding="utf-8")
+    assert ["sysctl", "-w", "net.ipv4.ip_forward=1"] in commands
+    assert ["systemctl", "daemon-reload"] in commands
+    assert ["systemctl", "enable", "--now", "py-nic-manager-global-forwarding.service"] in commands
+    service_text = service_file.read_text(encoding="utf-8")
+    assert "py_nic_manager.global_forwarding apply" in service_text
+    assert sys.executable in service_text
 
 
 def test_linux_dummy_loopback_keeps_physical_nature_but_remains_deletable() -> None:

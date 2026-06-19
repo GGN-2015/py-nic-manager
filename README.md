@@ -132,8 +132,10 @@ IPv4 router forwarding means the operating system may forward IP packets that
 arrive on one interface and are destined for another host. It is not required
 for ordinary web browsing, Wi-Fi connectivity, DNS, or other traffic generated
 by the local machine. Changing the global IPv4 forwarding setting may require a
-restart before the setting is fully active, and the GUI asks whether to restart
-immediately after a successful change.
+restart before the setting is fully active on Windows and macOS, and the GUI
+asks whether to restart immediately after a successful restart-required change.
+On Linux, Py NIC Manager applies global IPv4 forwarding immediately and makes it
+persistent without asking for a reboot.
 
 The adapter editor also includes a per-adapter "Send ICMP Time Exceeded"
 control. When enabled, the host may send ICMPv4 Time Exceeded replies after
@@ -228,7 +230,12 @@ Creation verifies local ping reachability to the assigned IPv4 address.
 Per-adapter IPv4 router forwarding uses
 `net.ipv4.conf.<interface>.forwarding`.
 
-Global IPv4 router forwarding uses `net.ipv4.ip_forward`.
+Global IPv4 router forwarding uses `net.ipv4.ip_forward`. Py NIC Manager writes
+its saved state to `/etc/py-nic-manager/global-forwarding.json`, writes a
+matching `/etc/sysctl.d/99-py-nic-manager-global-forwarding.conf` file, and
+installs a `py-nic-manager-global-forwarding.service` systemd oneshot unit that
+reapplies the saved setting during boot. The runtime sysctl value is changed
+immediately, so no Linux reboot is required after applying this setting.
 
 Persistent NAT uses iptables MASQUERADE rules with Py NIC Manager's own
 configuration in `/etc/py-nic-manager/nat-rules.json` plus a systemd service

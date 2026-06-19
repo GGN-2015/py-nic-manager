@@ -1645,15 +1645,15 @@ class LinuxBackend(BaseBackend):
         return None
 
     def plan_global_forwarding_update(self, enabled: bool) -> OperationPlan:
-        value = "1" if enabled else "0"
+        state = "enabled" if enabled else "disabled"
         return OperationPlan(
             "Update global IPv4 forwarding",
-            [["sysctl", "-w", f"net.ipv4.ip_forward={value}"]],
+            [[sys.executable, "-m", "py_nic_manager.global_forwarding", "set", state]],
             [
                 "Linux global IPv4 forwarding controls whether the kernel forwards IPv4 packets at all.",
-                "This command changes the runtime sysctl value; persistent boot configuration depends on the distribution.",
+                "Py NIC Manager applies the sysctl immediately and installs a systemd service so the setting is restored after reboot.",
             ],
-            restart_required=True,
+            restart_required=False,
         )
 
     def plan_nat_create(self, rule: NatRule) -> OperationPlan:

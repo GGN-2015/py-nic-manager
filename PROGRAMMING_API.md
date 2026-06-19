@@ -404,9 +404,12 @@ on Windows, tagged `iptables` mangle rules on Linux, and a tagged `pf` anchor
 on macOS. The Linux rule only matches packets that are not destined for the
 local host, so local TTL diagnostics are not silently dropped by this feature.
 
-Plans that change global IPv4 forwarding set `OperationPlan.restart_required`
-to `True` because the operating system may need a restart before the global
-router setting is fully active.
+Plans that change global IPv4 forwarding follow the platform backend behavior.
+Windows and macOS may set `OperationPlan.restart_required` to `True` because
+the operating system may need a restart before the global router setting is
+fully active. Linux applies `net.ipv4.ip_forward` immediately, writes a
+`sysctl.d` configuration file, installs Py NIC Manager's systemd oneshot
+service, and returns a plan with `restart_required=False`.
 
 ## Loopback Operations
 
@@ -661,7 +664,8 @@ for result in results:
 
 `CommandResult.ok` is true when the command returned exit code `0`.
 
-Restart the host after a restart-required plan:
+Restart the host after a restart-required plan. Linux global IPv4 forwarding
+plans do not require this restart path:
 
 ```python
 plan = manager.plan_set_global_forwarding(True)
