@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -21,6 +22,7 @@ from .models import (
     RouteInfo,
     VirtualAdapterInfo,
 )
+from .ping import iter_ping_process_output, ping_test_command, start_ping_test_process
 from .tk_fonts import configure_tk_fonts
 from .ui_tables import route_cell_text, route_table_columns
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
@@ -103,7 +105,8 @@ class NetworkManagerApp(tk.Tk):
         self.global_forwarding_var = tk.BooleanVar(value=False)
         ttk.Label(banner_frame, text="Py NIC Manager", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(banner_frame, text=status_text, style=status_style).grid(row=0, column=1, sticky="w", padx=(16, 0))
-        ttk.Button(banner_frame, text="Refresh", command=self.refresh_all).grid(row=0, column=4, sticky="e")
+        ttk.Button(banner_frame, text="Ping Test", command=self.open_ping_test).grid(row=0, column=4, sticky="e", padx=(0, 8))
+        ttk.Button(banner_frame, text="Refresh", command=self.refresh_all).grid(row=0, column=5, sticky="e")
         ttk.Label(banner_frame, textvariable=self.global_forwarding_status_var).grid(
             row=1,
             column=0,
@@ -844,6 +847,9 @@ class NetworkManagerApp(tk.Tk):
             return
         self._confirm_and_run(plan)
 
+    def open_ping_test(self) -> None:
+        PingTestDialog(self, self.backend.name, self.ui_text_font)
+
     def create_loopback(self) -> None:
         name = self.loopback_name_var.get().strip()
         if not name:
@@ -1389,6 +1395,112 @@ class RestartPromptDialog(tk.Toplevel):
     def _restart(self) -> None:
         self.restart_now = True
         self.destroy()
+
+
+class PingTestDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Tk, backend_name: str, text_font) -> None:
+        super().__init__(parent)
+        self.title("Ping Test")
+        self.geometry("720x520")
+        self.minsize(620, 420)
+        self.transient(parent)
+        self.grab_set()
+        self.backend_name = backend_name
+        self.text_font = text_font
+        self.process: subprocess.Popen[bytes] | None = None
+        self.output_queue: queue.Queue[str] = queue.Queue()
+        self.reader_thread: threading.Thread | None = None
+        self.src_var = tk.StringVar()
+        self.dest_var = tk.StringVar()
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        form = ttk.Frame(self, padding=12)
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Source IP address").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 8))
+        ttk.Entry(form, textvariable=self.src_var).grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        ttk.Label(form, text="Destination IP address").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(form, textvariable=self.dest_var).grid(row=1, column=1, sticky="ew")
+
+        self.output = scrolledtext.ScrolledText(self, wrap="word", font=text_font, height=16, state="disabled")
+        self.output.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.grid(row=2, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(buttons, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+        self.test_button = ttk.Button(buttons, text="Test", command=self.start_test)
+        self.test_button.grid(row=0, column=1, sticky="e", padx=(8, 8))
+        ttk.Button(buttons, text="Close", command=self.close).grid(row=0, column=2, sticky="e")
+
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.after(100, self._poll_output)
+
+    def start_test(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self._append_output("\nA ping test is already running. Close this window to stop it.\n")
+            return
+        try:
+            command = ping_test_command(self.backend_name, self.src_var.get(), self.dest_var.get())
+            self.process = start_ping_test_process(self.backend_name, self.src_var.get(), self.dest_var.get())
+        except (OSError, ValueError) as exc:
+            self._append_output(f"\nError: {exc}\n")
+            self.status_var.set("Failed to start ping test.")
+            return
+        self._append_output(f"$ {' '.join(command)}\n")
+        self.status_var.set("Ping test is running...")
+        self.test_button.state(["disabled"])
+        self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
+        self.reader_thread.start()
+
+    def close(self) -> None:
+        self._terminate_process()
+        self.destroy()
+
+    def _read_process_output(self) -> None:
+        process = self.process
+        if process is None:
+            return
+        for text in iter_ping_process_output(process):
+            self.output_queue.put(text)
+        returncode = process.wait()
+        self.output_queue.put(f"\nPing process exited with code {returncode}.\n")
+        self.output_queue.put("__PY_NIC_MANAGER_PING_DONE__")
+
+    def _poll_output(self) -> None:
+        try:
+            while True:
+                text = self.output_queue.get_nowait()
+                if text == "__PY_NIC_MANAGER_PING_DONE__":
+                    self.status_var.set("Ping test finished.")
+                    self.test_button.state(["!disabled"])
+                else:
+                    self._append_output(text)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(100, self._poll_output)
+
+    def _append_output(self, text: str) -> None:
+        self.output.configure(state="normal")
+        self.output.insert("end", text)
+        self.output.see("end")
+        self.output.configure(state="disabled")
+
+    def _terminate_process(self) -> None:
+        if self.process is None or self.process.poll() is not None:
+            return
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                self.process.kill()
+            except OSError:
+                pass
 
 
 class MessageDialog(tk.Toplevel):

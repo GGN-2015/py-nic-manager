@@ -104,6 +104,8 @@ Viewing and lookup:
 - `find_nat_rule(rule)`
 - `suggest_loopback_value(adapters=None)`
 - `suggest_virtual_adapter_value(adapters=None)`
+- `ping_test_command(src_ip_addr, dest_ip_addr)`
+- `start_ping_test(src_ip_addr, dest_ip_addr)`
 
 Snapshots:
 
@@ -185,6 +187,7 @@ Every GUI operation has a headless equivalent:
 | Set per-adapter IPv4 forwarding | `plan_set_adapter_forwarding()`, `set_adapter_forwarding()` |
 | Enable or disable an adapter | `plan_set_adapter_admin()`, `set_adapter_admin()` |
 | Set global IPv4 forwarding | `plan_set_global_forwarding()`, `set_global_forwarding()` |
+| Run a source-address ping test | `ping_test_command()`, `start_ping_test()` |
 | Restart after a restart-required plan | `plan_restart_system()`, `restart_system()` |
 | Add route | `plan_add_route()`, `add_route()` |
 | Update route | `plan_update_route()`, `update_route()` |
@@ -469,6 +472,24 @@ Platform behavior matches the GUI:
   are also listed.
 - Generic POSIX attempts portable bridge creation with `ifconfig`; unsupported
   systems fail clearly.
+
+## Ping Test
+
+Preview the platform-specific command:
+
+```python
+manager.ping_test_command("192.0.2.10", "198.51.100.1")
+```
+
+Start the same source-address ping test used by the GUI:
+
+```python
+process = manager.start_ping_test("192.0.2.10", "198.51.100.1")
+for line in process.stdout:
+    print(line.decode(errors="replace"), end="")
+```
+
+Windows uses `ping -S <src> <dest>`. Linux uses `ping -I <src> <dest>`.
 
 ## Route Operations
 

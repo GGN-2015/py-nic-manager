@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import subprocess
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,6 +23,7 @@ from .models import (
     RouteInfo,
     VirtualAdapterInfo,
 )
+from .ping import ping_test_command, start_ping_test_process
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
 
@@ -593,6 +595,12 @@ class NetworkManager:
     def restart_system(self, *, require_admin: bool = True) -> CommandResult:
         results = self.run_plan(self.plan_restart_system(), require_admin=require_admin)
         return results[0]
+
+    def ping_test_command(self, src_ip_addr: str, dest_ip_addr: str) -> list[str]:
+        return ping_test_command(self.backend.name, src_ip_addr, dest_ip_addr)
+
+    def start_ping_test(self, src_ip_addr: str, dest_ip_addr: str) -> subprocess.Popen[bytes]:
+        return start_ping_test_process(self.backend.name, src_ip_addr, dest_ip_addr)
 
     def run_plan(self, plan: OperationPlan, *, require_admin: bool = True) -> list[CommandResult]:
         if require_admin and not self.backend.dry_run and not self.is_admin:

@@ -44,6 +44,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
 - Enable or disable IPv4 router forwarding for a selected adapter where the
   operating system backend supports per-interface forwarding.
 - Enable or disable a selected adapter's administrative state.
+- Run a modal ping test with a source IP and destination IP while streaming
+  command output live in the GUI.
 - Export the current adapters, virtual NICs, routes, NAT rules, and global
   forwarding state to a JSON configuration snapshot.
 - Import a saved snapshot and apply it as a best-effort one-click restore after

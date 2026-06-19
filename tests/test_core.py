@@ -19,6 +19,7 @@ from py_nic_manager.backends import (
 from py_nic_manager.api import NetworkManager, PrivilegeError, sort_adapters as api_sort_adapters, sort_routes as api_sort_routes
 from py_nic_manager.app import NetworkManagerApp, _suggest_loopback_value, format_elapsed_time, route_sort_key
 from py_nic_manager.io import import_snapshot
+from py_nic_manager.ping import ping_test_command
 from py_nic_manager import windows_device_policy, windows_loopback, windows_tap, windows_virtual
 from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import _gui_preference, _qt_runtime_available, _qt_supported_on_current_platform
@@ -84,6 +85,35 @@ def test_command_result_error_message_strips_powershell_location_noise() -> None
 
     assert result.error_message() == "Failed through outbound interface 'WLAN'. inner reason"
     assert "$outboundInterface" not in result.error_message()
+
+
+def test_ping_test_command_is_platform_specific() -> None:
+    assert ping_test_command("Windows", "192.0.2.10", "198.51.100.1") == [
+        "ping",
+        "-S",
+        "192.0.2.10",
+        "198.51.100.1",
+    ]
+    assert ping_test_command("Linux", "192.0.2.10", "198.51.100.1") == [
+        "ping",
+        "-I",
+        "192.0.2.10",
+        "198.51.100.1",
+    ]
+
+
+def test_python_api_exposes_ping_test_command() -> None:
+    class FakePingBackend(LinuxBackend):
+        name = "Windows"
+
+    manager = NetworkManager(FakePingBackend(dry_run=True), admin_checker=lambda: True)
+
+    assert manager.ping_test_command("192.0.2.10", "198.51.100.1") == [
+        "ping",
+        "-S",
+        "192.0.2.10",
+        "198.51.100.1",
+    ]
 
 
 def test_snapshot_round_trip(tmp_path) -> None:

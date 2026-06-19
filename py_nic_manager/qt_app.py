@@ -8,8 +8,8 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtCore import QObject, QProcess, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPalette, QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .api import NetworkManager, adapter_sort_key, nat_sort_key, route_sort_key
-from .backends import BackendError
+from .backends import BackendError, decode_command_output
 from .models import (
     AdapterInfo,
     AddressInfo,
@@ -50,6 +50,7 @@ from .models import (
     RouteInfo,
     VirtualAdapterInfo,
 )
+from .ping import ping_test_command
 from .ui_tables import route_cell_text, route_table_columns
 from .validation import validate_ip, validate_prefix
 
@@ -181,6 +182,97 @@ class PlanDialog(QDialog):
         self.accept()
 
 
+class PingTestDialog(QDialog):
+    def __init__(self, parent: QWidget, backend_name: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Ping Test")
+        self.setMinimumSize(720, 520)
+        self.backend_name = backend_name
+        self.process: QProcess | None = None
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.src_edit = QLineEdit()
+        self.dest_edit = QLineEdit()
+        form.addRow("Source IP address", self.src_edit)
+        form.addRow("Destination IP address", self.dest_edit)
+        layout.addLayout(form)
+
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        layout.addWidget(self.output, 1)
+
+        buttons = QHBoxLayout()
+        self.status_label = QLabel("Ready")
+        buttons.addWidget(self.status_label, 1)
+        self.test_button = QPushButton("Test")
+        close_button = QPushButton("Close")
+        self.test_button.setObjectName("primaryButton")
+        self.test_button.clicked.connect(self.start_test)
+        close_button.clicked.connect(self.close)
+        buttons.addWidget(self.test_button)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def start_test(self) -> None:
+        if self.process is not None and self.process.state() != QProcess.ProcessState.NotRunning:
+            self._append_output("\nA ping test is already running. Close this window to stop it.\n")
+            return
+        try:
+            command = ping_test_command(self.backend_name, self.src_edit.text(), self.dest_edit.text())
+        except ValueError as exc:
+            self._append_output(f"\nError: {exc}\n")
+            self.status_label.setText("Failed to start ping test.")
+            return
+        self._append_output(f"$ {' '.join(command)}\n")
+        self.status_label.setText("Ping test is running...")
+        self.test_button.setEnabled(False)
+        self.process = QProcess(self)
+        self.process.setProgram(command[0])
+        self.process.setArguments(command[1:])
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self._read_process_output)
+        self.process.readyReadStandardError.connect(self._read_process_output)
+        self.process.finished.connect(self._process_finished)
+        self.process.errorOccurred.connect(self._process_error)
+        self.process.start()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._terminate_process()
+        super().closeEvent(event)
+
+    def _read_process_output(self) -> None:
+        if self.process is None:
+            return
+        data = bytes(self.process.readAllStandardOutput())
+        if data:
+            self._append_output(decode_command_output(data))
+
+    def _process_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        self._append_output(f"\nPing process exited with code {exit_code}.\n")
+        self.status_label.setText("Ping test finished.")
+        self.test_button.setEnabled(True)
+
+    def _process_error(self, error: QProcess.ProcessError) -> None:
+        self._append_output(f"\nError: {error.name}\n")
+        self.status_label.setText("Ping test failed.")
+        self.test_button.setEnabled(True)
+
+    def _append_output(self, text: str) -> None:
+        cursor = self.output.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.output.setTextCursor(cursor)
+        self.output.insertPlainText(text)
+        self.output.ensureCursorVisible()
+
+    def _terminate_process(self) -> None:
+        if self.process is None or self.process.state() == QProcess.ProcessState.NotRunning:
+            return
+        self.process.terminate()
+        if not self.process.waitForFinished(2000):
+            self.process.kill()
+
+
 class NetworkManagerQtWindow(QMainWindow):
     def __init__(self, *, auto_refresh: bool = True) -> None:
         super().__init__()
@@ -233,6 +325,8 @@ class NetworkManagerQtWindow(QMainWindow):
         self.apply_global_forwarding_button = QPushButton("Apply Global Forwarding")
         self.apply_global_forwarding_button.clicked.connect(self.apply_global_forwarding)
         self._admin_only_widgets.extend([self.global_forwarding_check, self.apply_global_forwarding_button])
+        self.ping_test_button = QPushButton("Ping Test")
+        self.ping_test_button.clicked.connect(self.open_ping_test)
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.refresh_all)
 
@@ -241,6 +335,7 @@ class NetworkManagerQtWindow(QMainWindow):
         top_layout.addWidget(self.global_forwarding_label)
         top_layout.addWidget(self.global_forwarding_check)
         top_layout.addWidget(self.apply_global_forwarding_button)
+        top_layout.addWidget(self.ping_test_button)
         top_layout.addWidget(self.refresh_button)
         layout.addWidget(top_bar)
 
@@ -851,6 +946,10 @@ class NetworkManagerQtWindow(QMainWindow):
             self._error("Forwarding Error", str(exc))
             return
         self._confirm_and_run(plan)
+
+    def open_ping_test(self) -> None:
+        dialog = PingTestDialog(self, self.manager.backend_name)
+        dialog.exec()
 
     def create_loopback(self) -> None:
         name = self.loopback_name_edit.text().strip()
