@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 from .api import NetworkManager, adapter_sort_key, nat_sort_key, route_sort_key
 from .backends import BackendError
 from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo, VirtualAdapterInfo
+from .ui_tables import route_cell_text, route_table_columns
 from .validation import validate_ip, validate_prefix
 
 
@@ -191,6 +192,7 @@ class NetworkManagerQtWindow(QMainWindow):
         self._thread_pool = QThreadPool.globalInstance()
         self._workers: set[Worker] = set()
         self._active_plan: OperationPlan | None = None
+        self._route_columns = route_table_columns(self.manager.backend_name)
 
         self._build_layout()
         self._set_mutating_controls_state()
@@ -392,29 +394,12 @@ class NetworkManagerQtWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self.route_table = QTableWidget(0, 8)
-        self.route_table.setHorizontalHeaderLabels(
-            [
-                "Destination",
-                "Gateway",
-                "Interface",
-                "Route Metric",
-                "Interface Metric",
-                "Effective Metric",
-                "Protocol",
-                "Table",
-            ]
-        )
+        self.route_table = QTableWidget(0, len(self._route_columns))
+        self.route_table.setHorizontalHeaderLabels([column.label for column in self._route_columns])
         self._configure_table(self.route_table)
         self.route_table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
-        self.route_table.setColumnWidth(0, 190)
-        self.route_table.setColumnWidth(1, 145)
-        self.route_table.setColumnWidth(2, 155)
-        self.route_table.setColumnWidth(3, 105)
-        self.route_table.setColumnWidth(4, 125)
-        self.route_table.setColumnWidth(5, 125)
-        self.route_table.setColumnWidth(6, 95)
-        self.route_table.setColumnWidth(7, 80)
+        for index, column in enumerate(self._route_columns):
+            self.route_table.setColumnWidth(index, column.width)
         self.route_table.itemSelectionChanged.connect(self._on_route_select)
         splitter.addWidget(self.route_table)
 
@@ -709,27 +694,9 @@ class NetworkManagerQtWindow(QMainWindow):
 
         self.route_table.setSortingEnabled(False)
         self.route_table.setRowCount(len(self.routes))
+        sort_columns = [column.key for column in self._route_columns]
         for row, route in enumerate(self.routes):
-            values = [
-                route.destination,
-                route.gateway,
-                route.interface,
-                "" if route.metric is None else str(route.metric),
-                "" if route.interface_metric is None else str(route.interface_metric),
-                "" if route.effective_metric is None else str(route.effective_metric),
-                route.protocol,
-                route.table,
-            ]
-            sort_columns = [
-                "destination",
-                "gateway",
-                "interface",
-                "route_metric",
-                "interface_metric",
-                "effective_metric",
-                "protocol",
-                "table",
-            ]
+            values = [route_cell_text(route, column.key) for column in self._route_columns]
             for column, value in enumerate(values):
                 item = _table_item(
                     value,

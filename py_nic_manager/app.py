@@ -6,13 +6,14 @@ import threading
 import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, scrolledtext, ttk
 
 from .admin import is_admin
 from .backends import BackendError, BaseBackend, get_backend
 from .io import export_snapshot, import_snapshot
 from .models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo, VirtualAdapterInfo
 from .tk_fonts import configure_tk_fonts
+from .ui_tables import route_cell_text, route_table_columns
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
 
 
@@ -44,6 +45,7 @@ class NetworkManagerApp(tk.Tk):
         self._adapter_sort_descending = False
         self._route_sort_column = "destination"
         self._route_sort_descending = False
+        self._route_columns = route_table_columns(self.backend.name)
         self._nat_sort_column = "name"
         self._nat_sort_descending = False
         self._optional_load_errors: list[str] = []
@@ -325,29 +327,22 @@ class NetworkManagerApp(tk.Tk):
     def _build_routes_tab(self) -> None:
         self.routes_paned, table_frame, panel = self._build_split_tab(self.routes_tab)
 
-        columns = ("gateway", "interface", "route_metric", "interface_metric", "effective_metric", "protocol", "table")
+        columns = tuple(column.key for column in self._route_columns if column.key != "destination")
         self.route_tree = ttk.Treeview(
             table_frame,
             columns=columns,
             show="tree headings",
             selectmode="browse",
         )
-        self._set_route_heading("#0", "Destination", "destination")
-        self._set_route_heading("gateway", "Gateway", "gateway")
-        self._set_route_heading("interface", "Interface", "interface")
-        self._set_route_heading("route_metric", "Route Metric", "route_metric")
-        self._set_route_heading("interface_metric", "Interface Metric", "interface_metric")
-        self._set_route_heading("effective_metric", "Effective Metric", "effective_metric")
-        self._set_route_heading("protocol", "Protocol", "protocol")
-        self._set_route_heading("table", "Table", "table")
-        self.route_tree.column("#0", width=190, minwidth=150)
-        self.route_tree.column("gateway", width=135)
-        self.route_tree.column("interface", width=150)
-        self.route_tree.column("route_metric", width=105, anchor="center")
-        self.route_tree.column("interface_metric", width=120, anchor="center")
-        self.route_tree.column("effective_metric", width=120, anchor="center")
-        self.route_tree.column("protocol", width=95)
-        self.route_tree.column("table", width=75)
+        for column in self._route_columns:
+            column_id = "#0" if column.key == "destination" else column.key
+            self._set_route_heading(column_id, column.label, column.key)
+            self.route_tree.column(
+                column_id,
+                width=column.width,
+                minwidth=150 if column.key == "destination" else 60,
+                anchor="center" if column.centered else "w",
+            )
         self.route_tree.bind("<<TreeviewSelect>>", self._on_route_select)
         self._grid_scrollable_tree(table_frame, self.route_tree)
         panel.columnconfigure(1, weight=1)
@@ -643,15 +638,11 @@ class NetworkManagerApp(tk.Tk):
                 "",
                 "end",
                 iid=iid,
-                text=route.destination,
-                values=(
-                    route.gateway,
-                    route.interface,
-                    "" if route.metric is None else str(route.metric),
-                    "" if route.interface_metric is None else str(route.interface_metric),
-                    "" if route.effective_metric is None else str(route.effective_metric),
-                    route.protocol,
-                    route.table,
+                text=route_cell_text(route, "destination"),
+                values=tuple(
+                    route_cell_text(route, column.key)
+                    for column in self._route_columns
+                    if column.key != "destination"
                 ),
             )
         if selected is not None and selected in self.route_tree.get_children():
@@ -665,21 +656,12 @@ class NetworkManagerApp(tk.Tk):
         )
 
     def _refresh_route_headings(self) -> None:
-        labels = {
-            "destination": ("#0", "Destination"),
-            "gateway": ("gateway", "Gateway"),
-            "interface": ("interface", "Interface"),
-            "route_metric": ("route_metric", "Route Metric"),
-            "interface_metric": ("interface_metric", "Interface Metric"),
-            "effective_metric": ("effective_metric", "Effective Metric"),
-            "protocol": ("protocol", "Protocol"),
-            "table": ("table", "Table"),
-        }
-        for sort_column, (column_id, label) in labels.items():
+        for column in self._route_columns:
+            column_id = "#0" if column.key == "destination" else column.key
             indicator = ""
-            if sort_column == self._route_sort_column:
+            if column.key == self._route_sort_column:
                 indicator = " v" if self._route_sort_descending else " ^"
-            self._set_route_heading(column_id, label + indicator, sort_column)
+            self._set_route_heading(column_id, column.label + indicator, column.key)
 
     def _sort_routes_by(self, column: str) -> None:
         if self._route_sort_column == column:
@@ -691,6 +673,10 @@ class NetworkManagerApp(tk.Tk):
 
     def _sorted_route_items(self) -> list[tuple[int, RouteInfo]]:
         items = list(enumerate(self.routes))
+        visible_columns = {column.key for column in self._route_columns}
+        if self._route_sort_column not in visible_columns:
+            self._route_sort_column = "destination"
+            self._route_sort_descending = False
         return sorted(
             items,
             key=lambda item: route_sort_key(item[1], self._route_sort_column),
@@ -798,7 +784,7 @@ class NetworkManagerApp(tk.Tk):
     def apply_selected_adapter(self) -> None:
         adapter = self._selected_adapter()
         if adapter is None:
-            messagebox.showinfo("No Adapter Selected", "Select an adapter first.")
+            self._show_message("No Adapter Selected", "Select an adapter first.")
             return
         try:
             address = self._adapter_address_from_form()
@@ -813,31 +799,31 @@ class NetworkManagerApp(tk.Tk):
                 self.adapter_dhcp_var.get(),
             )
         except (ValueError, BackendError) as exc:
-            messagebox.showerror("Invalid Adapter Settings", str(exc))
+            self._show_message("Invalid Adapter Settings", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def apply_selected_adapter_forwarding(self) -> None:
         adapter = self._selected_adapter()
         if adapter is None:
-            messagebox.showinfo("No Adapter Selected", "Select an adapter first.")
+            self._show_message("No Adapter Selected", "Select an adapter first.")
             return
         try:
             plan = self.backend.plan_adapter_forwarding_update(adapter, self.adapter_forwarding_var.get())
         except BackendError as exc:
-            messagebox.showerror("Forwarding Error", str(exc))
+            self._show_message("Forwarding Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def set_selected_adapter_admin(self, enabled: bool) -> None:
         adapter = self._selected_adapter()
         if adapter is None:
-            messagebox.showinfo("No Adapter Selected", "Select an adapter first.")
+            self._show_message("No Adapter Selected", "Select an adapter first.")
             return
         try:
             plan = self.backend.plan_adapter_admin_update(adapter, enabled)
         except BackendError as exc:
-            messagebox.showerror("Adapter State Error", str(exc))
+            self._show_message("Adapter State Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
@@ -845,59 +831,59 @@ class NetworkManagerApp(tk.Tk):
         try:
             plan = self.backend.plan_global_forwarding_update(self.global_forwarding_var.get())
         except BackendError as exc:
-            messagebox.showerror("Forwarding Error", str(exc))
+            self._show_message("Forwarding Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def create_loopback(self) -> None:
         name = self.loopback_name_var.get().strip()
         if not name:
-            messagebox.showinfo("Loopback Name Required", "Enter a loopback adapter name or alias.")
+            self._show_message("Loopback Name Required", "Enter a loopback adapter name or alias.")
             return
         try:
             plan = self.backend.plan_loopback_create(name)
         except BackendError as exc:
-            messagebox.showerror("Loopback Error", str(exc))
+            self._show_message("Loopback Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def delete_selected_loopback(self) -> None:
         adapter = self._selected_adapter()
         if adapter is None:
-            messagebox.showinfo("No Adapter Selected", "Select a loopback adapter first.")
+            self._show_message("No Adapter Selected", "Select a loopback adapter first.")
             return
         if not adapter.is_loopback:
-            messagebox.showinfo("Not a Loopback Adapter", "The selected adapter is not marked as loopback.")
+            self._show_message("Not a Loopback Adapter", "The selected adapter is not marked as loopback.")
             return
         try:
             plan = self.backend.plan_loopback_delete(adapter)
         except BackendError as exc:
-            messagebox.showerror("Loopback Error", str(exc))
+            self._show_message("Loopback Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def create_virtual_adapter(self) -> None:
         name = self.virtual_name_var.get().strip()
         if not name:
-            messagebox.showinfo("Virtual NIC Name Required", "Enter a virtual NIC name.")
+            self._show_message("Virtual NIC Name Required", "Enter a virtual NIC name.")
             return
         try:
             address = _address_from_text(self.virtual_address_var.get().strip() or "192.168.56.1/24")
             plan = self.backend.plan_virtual_adapter_create(name, address)
         except (ValueError, BackendError) as exc:
-            messagebox.showerror("Virtual NIC Error", str(exc))
+            self._show_message("Virtual NIC Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def delete_selected_virtual_adapter(self) -> None:
         adapter = self._selected_virtual_adapter()
         if adapter is None:
-            messagebox.showinfo("No Virtual NIC Selected", "Select a virtual NIC first.")
+            self._show_message("No Virtual NIC Selected", "Select a virtual NIC first.")
             return
         try:
             plan = self.backend.plan_virtual_adapter_delete(adapter)
         except BackendError as exc:
-            messagebox.showerror("Virtual NIC Error", str(exc))
+            self._show_message("Virtual NIC Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
@@ -906,32 +892,32 @@ class NetworkManagerApp(tk.Tk):
             route = self._route_from_form()
             plan = self.backend.plan_route_add(route)
         except (ValueError, BackendError) as exc:
-            messagebox.showerror("Invalid Route", str(exc))
+            self._show_message("Invalid Route", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def update_selected_route(self) -> None:
         old_route = self._selected_route()
         if old_route is None:
-            messagebox.showinfo("No Route Selected", "Select a route first.")
+            self._show_message("No Route Selected", "Select a route first.")
             return
         try:
             new_route = self._route_from_form()
             plan = self.backend.plan_route_update(old_route, new_route)
         except (ValueError, BackendError) as exc:
-            messagebox.showerror("Invalid Route", str(exc))
+            self._show_message("Invalid Route", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def delete_selected_route(self) -> None:
         route = self._selected_route()
         if route is None:
-            messagebox.showinfo("No Route Selected", "Select a route first.")
+            self._show_message("No Route Selected", "Select a route first.")
             return
         try:
             plan = self.backend.plan_route_delete(route)
         except BackendError as exc:
-            messagebox.showerror("Route Error", str(exc))
+            self._show_message("Route Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
@@ -940,32 +926,32 @@ class NetworkManagerApp(tk.Tk):
             rule = self._nat_rule_from_form()
             plan = self.backend.plan_nat_create(rule)
         except (ValueError, BackendError) as exc:
-            messagebox.showerror("Invalid NAT Rule", str(exc))
+            self._show_message("Invalid NAT Rule", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def update_selected_nat_rule(self) -> None:
         old_rule = self._selected_nat_rule()
         if old_rule is None:
-            messagebox.showinfo("No NAT Rule Selected", "Select a NAT rule first.")
+            self._show_message("No NAT Rule Selected", "Select a NAT rule first.")
             return
         try:
             new_rule = self._nat_rule_from_form()
             plan = self.backend.plan_nat_update(old_rule, new_rule)
         except (ValueError, BackendError) as exc:
-            messagebox.showerror("Invalid NAT Rule", str(exc))
+            self._show_message("Invalid NAT Rule", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
     def delete_selected_nat_rule(self) -> None:
         rule = self._selected_nat_rule()
         if rule is None:
-            messagebox.showinfo("No NAT Rule Selected", "Select a NAT rule first.")
+            self._show_message("No NAT Rule Selected", "Select a NAT rule first.")
             return
         try:
             plan = self.backend.plan_nat_delete(rule)
         except BackendError as exc:
-            messagebox.showerror("NAT Error", str(exc))
+            self._show_message("NAT Error", str(exc), kind="error")
             return
         self._confirm_and_run(plan)
 
@@ -1016,10 +1002,10 @@ class NetworkManagerApp(tk.Tk):
 
     def apply_imported_configuration(self) -> None:
         if self.imported_snapshot is None:
-            messagebox.showinfo("No Snapshot Imported", "Import a configuration file first.")
+            self._show_message("No Snapshot Imported", "Import a configuration file first.")
             return
         if self.imported_snapshot.platform and self.imported_snapshot.platform != self.backend.name:
-            proceed = messagebox.askyesno(
+            proceed = self._ask_yes_no(
                 "Platform Mismatch",
                 "This snapshot was captured on "
                 f"{self.imported_snapshot.platform}, but this system is using "
@@ -1090,15 +1076,16 @@ class NetworkManagerApp(tk.Tk):
 
     def _confirm_and_run(self, plan: OperationPlan) -> None:
         if not self.is_admin:
-            messagebox.showwarning(
+            self._show_message(
                 "Administrator Access Required",
                 "This action changes system network settings. Restart Py NIC Manager "
                 "as Administrator/root and try again.",
+                kind="warning",
             )
             return
         if not plan.commands:
             notes = "\n".join(plan.notes) if plan.notes else "No system commands were generated."
-            messagebox.showinfo("Nothing to Apply", notes)
+            self._show_message("Nothing to Apply", notes)
             return
         dialog = PlanDialog(self, plan)
         self.wait_window(dialog)
@@ -1120,14 +1107,15 @@ class NetworkManagerApp(tk.Tk):
             if not result.ok:
                 failures.append(result)
         if failures:
-            messagebox.showerror(
+            self._show_message(
                 "Command Failed",
                 "\n\n".join(result.error_message() for result in failures[:3]),
+                kind="error",
             )
             self.status_var.set(f"{len(failures)} command(s) failed.")
         else:
             self.status_var.set("Network command plan completed.")
-            messagebox.showinfo("Done", "The network command plan completed.")
+            self._show_message("Done", "The network command plan completed.")
             if self._active_plan and self._active_plan.restart_required:
                 should_refresh = not self._ask_restart_now()
         self._active_plan = None
@@ -1147,11 +1135,20 @@ class NetworkManagerApp(tk.Tk):
             return True
         return False
 
+    def _show_message(self, title: str, message: str, *, kind: str = "info") -> None:
+        dialog = MessageDialog(self, title, message, kind=kind, buttons=(("OK", True),))
+        self.wait_window(dialog)
+
+    def _ask_yes_no(self, title: str, message: str) -> bool:
+        dialog = MessageDialog(self, title, message, kind="question", buttons=(("No", False), ("Yes", True)))
+        self.wait_window(dialog)
+        return bool(dialog.result)
+
     def _on_restart_command_finished(self, result: object) -> None:
         if isinstance(result, CommandResult):
             self._log(result.summary())
             if not result.ok:
-                messagebox.showerror("Restart Failed", result.summary())
+                self._show_message("Restart Failed", result.summary(), kind="error")
                 self.status_var.set("Restart command failed.")
 
     def _run_background(self, func, callback, *, busy_message: str = "Working...") -> None:
@@ -1177,7 +1174,7 @@ class NetworkManagerApp(tk.Tk):
                 else:
                     self.status_var.set("Operation failed.")
                     self._log(str(payload))
-                    messagebox.showerror("Operation Failed", str(payload))
+                    self._show_message("Operation Failed", str(payload), kind="error")
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)
@@ -1385,6 +1382,57 @@ class RestartPromptDialog(tk.Toplevel):
         self.destroy()
 
 
+class MessageDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: tk.Tk,
+        title: str,
+        message: str,
+        *,
+        kind: str = "info",
+        buttons: tuple[tuple[str, bool], ...] = (("OK", True),),
+    ) -> None:
+        super().__init__(parent)
+        self.title(title)
+        self.transient(parent)
+        self.grab_set()
+        self.result = False
+        self.resizable(True, True)
+        self.minsize(360, 140)
+
+        frame = ttk.Frame(self, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text=_dialog_symbol(kind), font=("Arial", 22)).grid(row=0, column=0, sticky="n", padx=(0, 12))
+        ttk.Label(frame, text=title, style="Header.TLabel").grid(row=0, column=1, sticky="ew")
+        ttk.Label(frame, text=message, wraplength=560, justify="left").grid(
+            row=1,
+            column=1,
+            sticky="nsew",
+            pady=(8, 14),
+        )
+
+        button_frame = ttk.Frame(frame)
+        button_frame.grid(row=2, column=0, columnspan=2, sticky="e")
+        for index, (label, value) in enumerate(buttons):
+            ttk.Button(
+                button_frame,
+                text=label,
+                command=lambda selected=value: self._choose(selected),
+            ).grid(row=0, column=index, padx=(0 if index == 0 else 8, 0))
+
+        self.bind("<Escape>", lambda _event: self._choose(False))
+        self.wait_visibility()
+        self.focus()
+
+    def _choose(self, value: bool) -> None:
+        self.result = value
+        self.destroy()
+
+
 def _first_ipv4(adapter: AdapterInfo) -> AddressInfo | None:
     return next((item for item in adapter.addresses if item.family.lower() == "ipv4"), None)
 
@@ -1452,6 +1500,15 @@ def _format_ics_compatible(adapter: AdapterInfo) -> str:
     if adapter.ics_compatible is False:
         return "No"
     return "Unknown" if adapter.is_virtual or adapter.is_loopback else "N/A"
+
+
+def _dialog_symbol(kind: str) -> str:
+    symbols = {
+        "error": "!",
+        "warning": "!",
+        "question": "?",
+    }
+    return symbols.get(kind, "i")
 
 
 def format_elapsed_time(seconds: int | float) -> str:

@@ -36,6 +36,7 @@ from py_nic_manager.models import (
     VirtualAdapterInfo,
 )
 from py_nic_manager.tk_fonts import BUNDLED_FONT_FAMILY, bundled_font_paths
+from py_nic_manager.ui_tables import route_cell_text, route_table_columns
 from py_nic_manager.validation import normalize_mac, prefix_to_netmask, validate_network
 
 
@@ -322,6 +323,15 @@ def test_qt_runtime_probe_accepts_zero_returncode(monkeypatch) -> None:
     assert _qt_runtime_available() is True
 
 
+def test_tkinter_gui_uses_locale_independent_message_dialog() -> None:
+    source = Path(NetworkManagerApp.__module__.replace(".", "/") + ".py")
+    app_source = (Path(__file__).resolve().parents[1] / source).read_text(encoding="utf-8")
+
+    assert "messagebox" not in app_source
+    assert "class MessageDialog" in app_source
+    assert 'text="OK"' not in app_source
+
+
 def test_route_metrics_round_trip() -> None:
     route = RouteInfo(
         "0.0.0.0/0",
@@ -337,6 +347,28 @@ def test_route_metrics_round_trip() -> None:
     assert loaded.metric == 10
     assert loaded.interface_metric == 25
     assert loaded.effective_metric == 35
+
+
+def test_route_metric_columns_are_windows_only_in_gui_tables() -> None:
+    windows_columns = [column.key for column in route_table_columns("Windows")]
+    linux_columns = [column.key for column in route_table_columns("Linux")]
+    macos_columns = [column.key for column in route_table_columns("macOS")]
+
+    assert "interface_metric" in windows_columns
+    assert "effective_metric" in windows_columns
+    assert "interface_metric" not in linux_columns
+    assert "effective_metric" not in linux_columns
+    assert "interface_metric" not in macos_columns
+    assert "effective_metric" not in macos_columns
+
+
+def test_route_cell_text_formats_optional_metrics() -> None:
+    route = RouteInfo("0.0.0.0/0", "192.0.2.1", "Ethernet", metric=10, interface_metric=25, effective_metric=35)
+
+    assert route_cell_text(route, "route_metric") == "10"
+    assert route_cell_text(route, "interface_metric") == "25"
+    assert route_cell_text(route, "effective_metric") == "35"
+    assert route_cell_text(RouteInfo("0.0.0.0/0"), "effective_metric") == ""
 
 
 def test_route_destination_sort_key_uses_ipv4_integer_then_prefix() -> None:

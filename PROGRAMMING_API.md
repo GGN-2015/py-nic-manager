@@ -24,7 +24,7 @@ for adapter in manager.list_adapters(sort_by="name"):
 print("Global IPv4 forwarding:", manager.get_global_forwarding_enabled())
 
 for route in manager.list_routes(sort_by="destination"):
-    print(route.destination, route.gateway, route.interface, route.effective_metric)
+    print(route.destination, route.gateway, route.interface, route.metric)
 
 for rule in manager.list_nat_rules(sort_by="source_cidr"):
     print(rule.name, rule.source_cidr, rule.outbound_interface)
@@ -233,6 +233,10 @@ Route sort columns:
 - `protocol`
 - `table`
 
+`interface_metric` and `effective_metric` are populated by the Windows backend.
+The GUI shows those two columns only on Windows; they remain part of the API and
+snapshot schema so Windows route state can round-trip cleanly.
+
 NAT sort columns:
 
 - `name`
@@ -246,7 +250,7 @@ Examples:
 
 ```python
 adapters = manager.list_adapters(sort_by="forwarding", descending=True)
-routes = manager.list_routes(sort_by="effective_metric")
+routes = manager.list_routes(sort_by="route_metric")
 ```
 
 IPv4 route destinations are sorted as `(address_as_32_bit_integer, prefix)`.

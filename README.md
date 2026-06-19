@@ -35,6 +35,8 @@ package under `py_nic_manager/assets/fonts/JetBrainsMono-OFL.txt`.
   - Linux: `veth` pairs through `ip link`.
   - macOS and generic POSIX: bridge interfaces through `ifconfig`.
 - View, add, update, and delete IPv4 routes through a visual route table editor.
+  Windows-only `Interface Metric` and `Effective Metric` columns are shown only
+  on Windows, where those values are reported by the backend.
 - View, add, update, and delete persistent IPv4 NAT rules. Supported NAT rules
   masquerade traffic from a source CIDR when it leaves through the selected
   outbound interface or system-selected external route.
@@ -85,6 +87,9 @@ python -m py_nic_manager
 By default, the launcher uses the PyQt6 interface on Windows and the `tkinter`
 interface on Linux, macOS, and other POSIX systems. On Windows, if Qt cannot
 start, the launcher automatically falls back to `tkinter`.
+The `tkinter` interface uses Py NIC Manager's own English modal dialogs instead
+of system-localized messagebox buttons, so confirmation buttons stay in English
+regardless of the desktop locale.
 
 You can force a GUI backend with:
 
