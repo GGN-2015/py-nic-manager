@@ -126,8 +126,11 @@ def _virtual_item(name: str, adapter: dict[str, object] | None, state: dict[str,
         "managed": bool(state),
         "backend_id": str(adapter.get("PnPDeviceID", "")) if adapter else "",
         "admin_enabled": str(adapter.get("AdminStatus", "")).lower() == "up" if adapter else None,
-        "ics_compatible": True,
-        "ics_note": "TAP-Windows6 is an Ethernet-like NDIS adapter and is the preferred Windows ICS private interface.",
+        "ics_compatible": None,
+        "ics_note": (
+            "TAP-Windows6 is an Ethernet-like NDIS adapter and NAT-capable. "
+            "Windows ICS acceptance is verified when applying NAT; Py NIC Manager falls back to WinNAT if ICS rejects it."
+        ),
     }
 
 

@@ -148,8 +148,8 @@ policy later reapplies a deny rule, Windows may still block installation; in
 that case the helper reports a policy-specific error instead of hiding it.
 
 Non-loopback virtual NIC creation tries bundled OpenVPN TAP-Windows6 9.27.0
-first. TAP is an Ethernet-like NDIS adapter and is more likely to be accepted by
-Windows Internet Connection Sharing as the private/shared interface. If TAP
+first. TAP is an Ethernet-like NDIS adapter and is the preferred Windows virtual
+NIC for NAT source networks. If TAP
 creation fails, Py NIC Manager falls back to bundled Wintun 0.14.1. Wintun is a
 layer-3 TUN adapter and is marked as not ICS-compatible because Windows ICS
 often rejects it as the private/shared interface. TAP assets keep their GPLv2
@@ -161,6 +161,9 @@ mode. The adapter table marks each entry as `Physical NIC`, `Loopback`, or
 `Non-loopback Virtual NIC`. The table still separates `Status` from `Admin`:
 `Status` is Windows' media/link state, while `Admin` is the enable/disable state
 controlled by the Enable/Disable buttons.
+TAP is marked as NAT-capable, but Windows ICS acceptance is verified when a NAT
+rule is applied. If ICS rejects the TAP private interface, Py NIC Manager falls
+back to Windows WinNAT source-prefix NAT for the selected source CIDR.
 After assigning the requested IPv4 address, virtual NIC creation verifies that
 the local host can ping that address. If the check fails, creation fails instead
 of treating an unusable virtual NIC as successful.
@@ -174,12 +177,15 @@ Per-adapter IPv4 router forwarding uses `Get-NetIPInterface` and
 Global IPv4 router forwarding uses the Windows `IPEnableRouter` registry
 setting under `Tcpip\Parameters`.
 
-Persistent NAT uses Windows RRAS NAT when that netsh context is available and
-falls back to Internet Connection Sharing (ICS) through `HNetCfg.HNetShare`.
+Persistent NAT uses Windows RRAS NAT when that netsh context is available,
+falls back to Windows WinNAT source-prefix NAT, and then falls back to Internet
+Connection Sharing (ICS) through `HNetCfg.HNetShare`.
 Rules take effect immediately after the command succeeds and persist through the
-Windows RRAS/ICS configuration. You still select an outbound interface in Py NIC
-Manager; the Windows backend uses that interface as the public/shared interface
-and infers the private/internal interface from the source CIDR. Windows ICS
+Windows RRAS/WinNAT/ICS configuration. You still select an outbound interface in
+Py NIC Manager; the Windows backend uses that interface as the public/shared
+interface and infers the private/internal interface from the source CIDR. WinNAT
+uses the source CIDR directly, so a Py NIC Manager TAP virtual NIC can be used
+as the internal NAT source even when Windows ICS refuses that adapter. Windows ICS
 supports one public shared interface at a time, so an ICS-backed rule may replace
 another ICS sharing setup. Windows ICS also requires a real private network
 adapter; it cannot use a loopback adapter as the shared/private side.

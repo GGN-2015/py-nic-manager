@@ -943,6 +943,18 @@ def test_windows_wintun_virtual_item_marks_ics_incompatible() -> None:
     assert "TUN" in item["ics_note"]
 
 
+def test_windows_tap_virtual_item_does_not_promise_ics_without_nat_apply() -> None:
+    item = windows_tap._virtual_item(
+        "py-virtual0",
+        {"Name": "py-virtual0", "Status": "Up", "PnPDeviceID": r"ROOT\\NET\\0001"},
+        {"address": "192.168.56.1/24"},
+    )
+
+    assert item["nat_capable"] is True
+    assert item["ics_compatible"] is None
+    assert "WinNAT" in item["ics_note"]
+
+
 def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:
     backend = LinuxBackend(dry_run=True)
 
@@ -994,7 +1006,7 @@ def test_iptables_nat_parser_marks_managed_and_external_rules() -> None:
     assert rules[1].persistent is False
 
 
-def test_windows_nat_plan_uses_rras_or_ics_only() -> None:
+def test_windows_nat_plan_uses_rras_winnat_or_ics() -> None:
     backend = WindowsBackend(dry_run=True)
 
     plan = backend.plan_nat_create(NatRule("nat0", "192.168.1.0/30", "WLAN"))
@@ -1004,7 +1016,12 @@ def test_windows_nat_plan_uses_rras_or_ics_only() -> None:
     assert "HNetCfg.HNetShare" in rendered
     assert '"routing", "ip", "nat"' in rendered
     assert "Invoke-RrasNat" in rendered
+    assert "Invoke-WinNat" in rendered
     assert "Invoke-IcsNat" in rendered
+    assert "New-NetNat" in rendered
+    assert "Remove-NetNat" in rendered
+    assert "-InternalIPInterfaceAddressPrefix $sourceCidr" in rendered
+    assert "-ExternalIPInterfaceAddressPrefix $externalPrefix" in rendered
     assert "Format-IcsError" in rendered
     assert "specified cast is invalid" in rendered
     assert "Windows ICS cannot use loopback adapter" in rendered
@@ -1024,6 +1041,17 @@ def test_windows_nat_plan_uses_rras_or_ics_only() -> None:
     assert "Test-IPv4PrefixOverlap" in rendered
     assert "Failed to create Windows RRAS/ICS NAT rule" in rendered
     assert "Stop-PyNicManagerCommand" in rendered
+    assert rendered.index("Invoke-WinNat") < rendered.index("Invoke-IcsNat")
+
+
+def test_windows_nat_delete_removes_winnat_rule() -> None:
+    backend = WindowsBackend(dry_run=True)
+
+    plan = backend.plan_nat_delete(NatRule("nat0", "192.168.1.0/30", "WLAN"))
+    rendered = " ".join(plan.commands[0])
+
+    assert "Get-NetNat -Name $Name" in rendered
+    assert "Remove-NetNat" in rendered
 
 
 def test_windows_nat_requires_outbound_interface() -> None:

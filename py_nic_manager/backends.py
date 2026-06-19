@@ -353,8 +353,8 @@ $adapters = Get-NetAdapter -IncludeHidden | Sort-Object -Property InterfaceIndex
     $icsCompatible = $false
     $icsNote = "Windows ICS does not support loopback adapters as the private/shared interface."
   } elseif ($virtualKind -eq "tap") {
-    $icsCompatible = $true
-    $icsNote = "TAP-Windows6 is Ethernet-like and preferred for Windows ICS private sharing."
+    $icsCompatible = $null
+    $icsNote = "TAP-Windows6 is Ethernet-like and NAT-capable, but Windows ICS acceptance is verified when applying NAT. Py NIC Manager falls back to WinNAT if ICS rejects it."
   } elseif ($virtualKind -eq "wintun") {
     $icsCompatible = $false
     $icsNote = "Wintun is a layer-3 TUN adapter; Windows ICS often rejects it as a private/shared interface."
@@ -1012,6 +1012,30 @@ function Invoke-RrasNat {
   "RRAS"
 }
 
+function Remove-WinNatRule {
+  param([string]$Name)
+  try {
+    Get-NetNat -Name $Name -ErrorAction SilentlyContinue |
+      Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
+  } catch {}
+}
+
+function Invoke-WinNat {
+  if (-not (Get-Command Get-NetNat -ErrorAction SilentlyContinue) -or -not (Get-Command New-NetNat -ErrorAction SilentlyContinue)) {
+    throw "Windows NetNat cmdlets are not available."
+  }
+  if ([bool]$internalCandidate.IsLoopback) {
+    throw "WinNAT cannot use loopback adapter '$internalInterface' as an internal source interface."
+  }
+  Remove-WinNatRule $ruleName
+  New-NetNat `
+    -Name $ruleName `
+    -InternalIPInterfaceAddressPrefix $sourceCidr `
+    -ExternalIPInterfaceAddressPrefix $externalPrefix `
+    -ErrorAction Stop | Out-Null
+  "WinNAT"
+}
+
 function Format-IcsError {
   param([string]$Message, [string]$InterfaceName)
   if ($Message -match "指定的转换无效|Specified cast is not valid") {
@@ -1138,6 +1162,13 @@ try {
   $errors += ("RRAS: " + $_.Exception.Message)
 }
 if (-not $method) {
+  try {
+    $method = Invoke-WinNat
+  } catch {
+    $errors += ("WinNAT: " + $_.Exception.Message)
+  }
+}
+if (-not $method) {
   if ([bool]$internalCandidate.IsLoopback) {
     $errors += ("ICS: Windows ICS cannot use loopback adapter '$internalInterface' as the private/shared interface. Use a real private adapter for '$sourceCidr', or configure RRAS NAT on a Windows edition where RRAS is available.")
   } elseif ([string]$internalCandidate.Kind -eq "wintun") {
@@ -1162,9 +1193,9 @@ Save-PyNicNatRule $method $internalInterface $externalPrefix
             .replace("__PY_NIC_RULE_ENABLED__", "$true" if rule.enabled else "$false")
         )
         notes = [
-            "Windows NAT uses RRAS when available and falls back to Internet Connection Sharing (ICS).",
+            "Windows NAT uses RRAS when available, then WinNAT source-prefix NAT, and falls back to Internet Connection Sharing (ICS).",
             f'Py NIC Manager uses "{outbound_interface}" as the public/outbound interface and infers the private/internal interface from {source}.',
-            "Windows ICS/RRAS settings are persistent after the command succeeds.",
+            "Windows RRAS/WinNAT/ICS settings are persistent after the command succeeds.",
             "Windows ICS allows one public shared interface at a time; applying an ICS-backed rule may replace another ICS sharing setup.",
         ]
         if not rule.enabled:
@@ -1227,9 +1258,18 @@ function Disable-IcsForInterface {
   } catch {}
 }
 
+function Remove-WinNatRule {
+  param([string]$Name)
+  try {
+    Get-NetNat -Name $Name -ErrorAction SilentlyContinue |
+      Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
+  } catch {}
+}
+
 $ruleName = "__PY_NIC_RULE_NAME__"
 $rules = @(Read-PyNicNatState)
 $target = $rules | Where-Object { [string]$_.name -eq $ruleName } | Select-Object -First 1
+Remove-WinNatRule $ruleName
 if ($target) {
   $outboundInterface = [string]$target.outbound_interface
   $internalInterface = [string]$target.internal_interface

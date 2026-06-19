@@ -456,7 +456,7 @@ manager.delete_virtual_adapter("py-virtual0")
 Platform behavior matches the GUI:
 
 - Windows tries the bundled TAP-Windows6 assets first because TAP is
-  Ethernet-like and preferred for ICS private sharing, then falls back to the
+  Ethernet-like and preferred for NAT source networks, then falls back to the
   bundled Wintun DLLs. Both paths create non-loopback, non-Hyper-V virtual NICs.
 - Linux creates a `veth` pair and assigns the requested IPv4 CIDR to the
   primary side. Attach the peer side to a namespace, container, bridge, or test
@@ -545,14 +545,17 @@ results = manager.create_nat_rule(
 
 The `outbound_interface` argument is always the outbound/public interface name
 from the user's point of view. On Windows, Py NIC Manager uses RRAS NAT when
-available and falls back to Internet Connection Sharing (ICS). The source CIDR
-is used to infer the private/internal interface, while `outbound_interface`
-selects the public/shared interface. Windows ICS supports one public shared
-interface at a time, so an ICS-backed rule may replace another ICS sharing setup.
-Windows ICS also requires a real private network adapter; it cannot use a
-loopback adapter as the shared/private side.
+available, falls back to WinNAT source-prefix NAT, and then falls back to
+Internet Connection Sharing (ICS). The source CIDR is used to infer the
+private/internal interface, while `outbound_interface` selects the public/shared
+interface. WinNAT uses the source CIDR directly, so a Py NIC Manager TAP virtual
+NIC can remain the internal NAT source even when Windows ICS rejects that
+adapter. Windows ICS supports one public shared interface at a time, so an
+ICS-backed rule may replace another ICS sharing setup. Windows ICS also requires
+a real private network adapter; it cannot use a loopback adapter as the
+shared/private side.
 
-For Windows NAT, a Wintun virtual NIC created with
+For Windows NAT, a virtual NIC created with
 `create_virtual_adapter("py-virtual0", address="192.168.56.1/24")` exposes
 `192.168.56.0/24` as the internal source CIDR. Use that CIDR when creating the
 NAT rule.
