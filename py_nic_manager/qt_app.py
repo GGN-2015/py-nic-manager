@@ -39,7 +39,17 @@ from PyQt6.QtWidgets import (
 
 from .api import NetworkManager, adapter_sort_key, nat_sort_key, route_sort_key
 from .backends import BackendError
-from .models import AdapterInfo, AddressInfo, CommandResult, NatRule, NetworkSnapshot, OperationPlan, RouteInfo, VirtualAdapterInfo
+from .models import (
+    AdapterInfo,
+    AddressInfo,
+    CommandResult,
+    NIC_NATURE_PHYSICAL,
+    NatRule,
+    NetworkSnapshot,
+    OperationPlan,
+    RouteInfo,
+    VirtualAdapterInfo,
+)
 from .ui_tables import route_cell_text, route_table_columns
 from .validation import validate_ip, validate_prefix
 
@@ -1349,6 +1359,8 @@ def _source_cidr_from_text(value: str) -> str:
 
 
 def _adapter_kind(adapter: AdapterInfo) -> str:
+    if adapter.nic_nature == NIC_NATURE_PHYSICAL:
+        return NIC_NATURE_PHYSICAL
     if adapter.is_loopback:
         return "Loopback"
     if adapter.is_virtual:

@@ -819,6 +819,8 @@ def _format_address(address: AddressInfo) -> str:
 
 
 def _adapter_kind(adapter: AdapterInfo) -> str:
+    if adapter.nic_nature == NIC_NATURE_PHYSICAL:
+        return NIC_NATURE_PHYSICAL
     if adapter.is_loopback:
         return "Loopback"
     if adapter.is_virtual:

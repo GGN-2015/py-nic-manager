@@ -409,7 +409,10 @@ manager.delete_loopback("py-loopback1")
 The exact backend behavior matches the GUI:
 
 - Windows creates Microsoft KM-TEST Loopback Adapters.
-- Linux creates dummy interfaces.
+- Linux creates dummy interfaces. These interfaces may show `Physical NIC` in
+  the `AdapterInfo.nature` display field because Linux exposes them as
+  Ethernet-like links, but `AdapterInfo.is_loopback` remains `True` so API and
+  GUI loopback edit/delete operations still work.
 - macOS and generic POSIX create aliases on `lo0`.
 
 ## Virtual NIC Operations

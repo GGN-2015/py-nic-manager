@@ -200,7 +200,11 @@ Routes that use an IPv4 link-local gateway such as `169.254.x.x` are created
 with `onlink` when an interface is selected. This avoids Linux rejecting valid
 same-link gateways with `Nexthop has invalid gateway`.
 
-Loopback-style adapters are implemented as Linux dummy interfaces.
+Loopback-style adapters are implemented as Linux dummy interfaces. Linux often
+reports dummy interfaces as Ethernet-like links at the link layer, so Py NIC
+Manager keeps their `NIC Nature` display as `Physical NIC` when appropriate.
+They are still marked internally as managed loopback-style adapters and can be
+edited or removed with the loopback controls.
 
 Non-loopback virtual NIC creation uses a `veth` pair. The primary side receives
 the requested IPv4 CIDR and is intended to be the NAT internal interface; the

@@ -11,7 +11,16 @@ from tkinter import filedialog, scrolledtext, ttk
 from .admin import is_admin
 from .backends import BackendError, BaseBackend, get_backend
 from .io import export_snapshot, import_snapshot
-from .models import AdapterInfo, AddressInfo, NatRule, NetworkSnapshot, OperationPlan, RouteInfo, VirtualAdapterInfo
+from .models import (
+    AdapterInfo,
+    AddressInfo,
+    NIC_NATURE_PHYSICAL,
+    NatRule,
+    NetworkSnapshot,
+    OperationPlan,
+    RouteInfo,
+    VirtualAdapterInfo,
+)
 from .tk_fonts import configure_tk_fonts
 from .ui_tables import route_cell_text, route_table_columns
 from .validation import parse_csv, validate_ip, validate_network, validate_prefix
@@ -1466,6 +1475,8 @@ def _source_cidr_from_text(value: str) -> str:
 
 
 def _adapter_kind(adapter: AdapterInfo) -> str:
+    if adapter.nic_nature == NIC_NATURE_PHYSICAL:
+        return NIC_NATURE_PHYSICAL
     if adapter.is_loopback:
         return "Loopback"
     if adapter.is_virtual:

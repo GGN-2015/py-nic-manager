@@ -17,6 +17,7 @@ from .models import (
     AdapterInfo,
     AddressInfo,
     CommandResult,
+    NIC_NATURE_PHYSICAL,
     NatRule,
     NetworkSnapshot,
     OperationPlan,
@@ -1294,12 +1295,17 @@ class LinuxBackend(BaseBackend):
     name = "Linux"
 
     def list_adapters(self) -> list[AdapterInfo]:
-        data = self.run_json(["ip", "-j", "addr", "show"])
+        data = self.run_json(["ip", "-j", "-d", "addr", "show"])
         routes = self.list_routes()
         dns_by_iface = self._dns_servers_by_iface()
         adapters: list[AdapterInfo] = []
         for item in _as_list(data):
             name = str(item.get("ifname", ""))
+            link_type = str(item.get("link_type", ""))
+            link_kind = _linux_link_kind(item)
+            is_kernel_loopback = link_type == "loopback" or name == "lo"
+            is_dummy_loopback = link_kind == "dummy" or name.startswith("py-loopback")
+            is_virtual_kind = link_kind in {"veth", "tun", "tap"}
             addresses = [
                 AddressInfo(
                     address=str(info.get("local", "")),
@@ -1313,7 +1319,7 @@ class LinuxBackend(BaseBackend):
                 AdapterInfo(
                     id=name,
                     name=name,
-                    description=str(item.get("link_type", "")),
+                    description=link_kind or link_type,
                     mac=str(item.get("address", "")),
                     status=str(item.get("operstate", "")),
                     addresses=addresses,
@@ -1325,9 +1331,10 @@ class LinuxBackend(BaseBackend):
                     dns_servers=dns_by_iface.get(name, []),
                     dhcp_enabled=None,
                     admin_enabled=bool("UP" in item.get("flags", [])),
-                    is_loopback=bool(item.get("link_type") in {"loopback", "dummy"} or name == "lo"),
-                    is_virtual=bool(item.get("link_type") in {"veth", "tun", "tap"} or name.startswith("py-virtual")),
-                    virtual_kind=str(item.get("link_type", "")) if item.get("link_type") in {"veth", "tun", "tap"} else "",
+                    is_loopback=bool(is_kernel_loopback or is_dummy_loopback),
+                    is_virtual=bool(is_virtual_kind or name.startswith("py-virtual")),
+                    virtual_kind=link_kind if is_virtual_kind else "",
+                    nic_nature=NIC_NATURE_PHYSICAL if is_dummy_loopback and not is_kernel_loopback else "",
                     forwarding_enabled=self._forwarding_enabled(name),
                 )
             )
@@ -1335,14 +1342,15 @@ class LinuxBackend(BaseBackend):
 
     def list_virtual_adapters(self) -> list[VirtualAdapterInfo]:
         try:
-            data = self.run_json(["ip", "-j", "addr", "show"])
+            data = self.run_json(["ip", "-j", "-d", "addr", "show"])
         except BackendError:
             return []
         items: list[VirtualAdapterInfo] = []
         for item in _as_list(data):
             name = str(item.get("ifname", ""))
             link_type = str(item.get("link_type", ""))
-            if link_type not in {"veth", "tun", "tap"} and not name.startswith("py-virtual"):
+            link_kind = _linux_link_kind(item)
+            if link_kind not in {"veth", "tun", "tap"} and not name.startswith("py-virtual"):
                 continue
             address = ""
             for info in item.get("addr_info", []):
@@ -1352,7 +1360,7 @@ class LinuxBackend(BaseBackend):
             items.append(
                 VirtualAdapterInfo(
                     name=name,
-                    kind=link_type or "virtual",
+                    kind=link_kind if link_kind in {"veth", "tun", "tap"} else link_type or "virtual",
                     status=str(item.get("operstate", "")),
                     address=address,
                     source_cidr=_source_cidr_from_address(address),
@@ -2277,6 +2285,15 @@ def _as_list(data: object) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     return []
+
+
+def _linux_link_kind(item: dict) -> str:
+    linkinfo = item.get("linkinfo")
+    if isinstance(linkinfo, dict):
+        info_kind = str(linkinfo.get("info_kind", "")).strip()
+        if info_kind:
+            return info_kind
+    return str(item.get("link_type", "")).strip()
 
 
 def _optional_int(value: object) -> int | None:

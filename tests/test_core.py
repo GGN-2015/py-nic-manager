@@ -675,6 +675,48 @@ def test_linux_global_forwarding_plan_uses_ip_forward_sysctl() -> None:
     assert plan.commands == [["sysctl", "-w", "net.ipv4.ip_forward=0"]]
 
 
+def test_linux_dummy_loopback_keeps_physical_nature_but_remains_deletable() -> None:
+    class DummyLinuxBackend(LinuxBackend):
+        def run_json(self, command: list[str]) -> object:
+            if command[:5] == ["ip", "-j", "-d", "addr", "show"]:
+                return [
+                    {
+                        "ifname": "lab-dummy0",
+                        "link_type": "ether",
+                        "linkinfo": {"info_kind": "dummy"},
+                        "address": "1a:2b:3c:4d:5e:6f",
+                        "operstate": "UNKNOWN",
+                        "flags": ["BROADCAST", "NOARP", "UP", "LOWER_UP"],
+                        "addr_info": [
+                            {
+                                "family": "inet",
+                                "local": "192.0.2.60",
+                                "prefixlen": 24,
+                            }
+                        ],
+                    }
+                ]
+            if command[:5] == ["ip", "-j", "route", "show", "table"]:
+                return []
+            raise AssertionError(command)
+
+        def _dns_servers_by_iface(self) -> dict[str, list[str]]:
+            return {}
+
+        def _forwarding_enabled(self, iface: str) -> bool | None:
+            return False
+
+    manager = NetworkManager(DummyLinuxBackend(dry_run=True), admin_checker=lambda: True)
+
+    adapter = manager.list_adapters()[0]
+    plan = manager.plan_delete_loopback("lab-dummy0")
+
+    assert adapter.description == "dummy"
+    assert adapter.is_loopback is True
+    assert adapter.nature == NIC_NATURE_PHYSICAL
+    assert plan.commands == [["ip", "link", "delete", "lab-dummy0"]]
+
+
 def test_linux_nat_plan_uses_persistent_helper_without_restart() -> None:
     backend = LinuxBackend(dry_run=True)
 
