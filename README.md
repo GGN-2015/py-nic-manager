@@ -223,8 +223,11 @@ edited or removed with the loopback controls.
 Non-loopback virtual NIC creation uses a `veth` pair. The primary side receives
 the requested IPv4 CIDR and is intended to be the NAT internal interface; the
 peer side is brought up so users can attach it to a namespace, container,
-bridge, or test stack. The runtime interface is created immediately. Persist it
-with your distribution's network manager if it must survive reboot.
+bridge, or test stack. The peer name uses the primary name as a prefix with a
+`-p` suffix, such as `py-virtual0-p`. Deleting either endpoint through Py NIC
+Manager checks both expected names, so the pair is cleaned up robustly even if
+one endpoint was already removed. The runtime interface is created immediately.
+Persist it with your distribution's network manager if it must survive reboot.
 Creation verifies local ping reachability to the assigned IPv4 address.
 
 Per-adapter IPv4 router forwarding uses

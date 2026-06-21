@@ -501,8 +501,11 @@ Platform behavior matches the GUI:
   Ethernet-like and preferred for NAT source networks, then falls back to the
   bundled Wintun DLLs. Both paths create non-loopback, non-Hyper-V virtual NICs.
 - Linux creates a `veth` pair and assigns the requested IPv4 CIDR to the
-  primary side. Attach the peer side to a namespace, container, bridge, or test
-  stack as needed.
+  primary side. The peer endpoint is named with the primary name as a prefix and
+  a `-p` suffix, for example `py-virtual0-p`. Attach the peer side to a
+  namespace, container, bridge, or test stack as needed. Deleting either
+  endpoint through Py NIC Manager checks both expected endpoint names so the
+  pair is cleaned up even if one side was already removed.
 - macOS creates a bridge interface with `ifconfig <bridgeN> create` and assigns
   the requested IPv4 CIDR. Existing `utun`, `tun`, `tap`, and bridge interfaces
   are also listed.

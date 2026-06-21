@@ -1599,13 +1599,31 @@ class LinuxBackend(BaseBackend):
             [
                 "Linux creates a veth pair that can be used as a NAT internal network.",
                 f"The primary side is {clean_name}; the peer side is {peer_name}.",
+                f"The peer name uses {clean_name} as a prefix so either side can be selected for deletion.",
                 "Persist this interface with your distribution's network manager if it must survive reboot.",
             ],
         )
 
     def plan_virtual_adapter_delete(self, adapter: VirtualAdapterInfo) -> OperationPlan:
         clean_name = _validate_virtual_adapter_name(adapter.name)
-        return OperationPlan("Delete virtual adapter", [["ip", "link", "delete", clean_name]])
+        names = _linux_related_veth_names(clean_name)
+        script = (
+            'status=0\n'
+            'for iface in "$@"; do\n'
+            '  if ip link show dev "$iface" >/dev/null 2>&1; then\n'
+            '    ip link delete dev "$iface" >/dev/null 2>&1 || status=$?\n'
+            '  fi\n'
+            'done\n'
+            'exit "$status"\n'
+        )
+        return OperationPlan(
+            "Delete virtual adapter",
+            [["sh", "-c", script, "py-nic-manager-delete-veth", *names]],
+            [
+                "Linux veth endpoints are linked; deleting either side normally removes the pair.",
+                "Py NIC Manager still checks both expected endpoint names so deleting the primary or peer is robust if one side is already gone.",
+            ],
+        )
 
     def plan_adapter_forwarding_update(self, adapter: AdapterInfo, enabled: bool) -> OperationPlan:
         value = "1" if enabled else "0"
@@ -2510,10 +2528,24 @@ def _source_cidr_from_address(value: str) -> str:
 
 
 def _linux_peer_name(name: str) -> str:
-    suffix = "-peer"
+    suffix = "-p"
     if len(name) + len(suffix) <= 15:
         return f"{name}{suffix}"
-    return f"{name[:10]}-peer"
+    raise BackendError(
+        f"Linux veth peer name must use the virtual adapter name as a prefix; "
+        f"'{name}' is too long to append '{suffix}' within Linux's 15-character interface-name limit."
+    )
+
+
+def _linux_related_veth_names(name: str) -> list[str]:
+    suffix = "-p"
+    if name.endswith(suffix):
+        primary = name[: -len(suffix)]
+        return [name, primary]
+    try:
+        return [name, _linux_peer_name(name)]
+    except BackendError:
+        return [name]
 
 
 def _virtual_kind_from_name(name: str) -> str:

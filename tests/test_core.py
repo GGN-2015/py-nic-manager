@@ -1463,10 +1463,29 @@ def test_linux_virtual_adapter_plan_creates_veth_pair() -> None:
 
     plan = backend.plan_virtual_adapter_create("py-virtual0", AddressInfo("192.168.56.1", 24))
 
-    assert ["ip", "link", "add", "py-virtual0", "type", "veth", "peer", "name", "py-virtual-peer"] in plan.commands
+    assert ["ip", "link", "add", "py-virtual0", "type", "veth", "peer", "name", "py-virtual0-p"] in plan.commands
     assert ["ip", "addr", "add", "192.168.56.1/24", "dev", "py-virtual0"] in plan.commands
     assert ["ping", "-c", "1", "-W", "2", "192.168.56.1"] in plan.commands
     assert plan.title == "Create virtual adapter"
+
+
+def test_linux_virtual_adapter_delete_checks_primary_and_peer_names() -> None:
+    backend = LinuxBackend(dry_run=True)
+
+    primary_plan = backend.plan_virtual_adapter_delete(VirtualAdapterInfo("py-virtual0", "veth"))
+    peer_plan = backend.plan_virtual_adapter_delete(VirtualAdapterInfo("py-virtual0-p", "veth"))
+
+    assert primary_plan.commands[0][-2:] == ["py-virtual0", "py-virtual0-p"]
+    assert peer_plan.commands[0][-2:] == ["py-virtual0-p", "py-virtual0"]
+    assert "ip link show dev" in primary_plan.commands[0][2]
+    assert "ip link delete dev" in primary_plan.commands[0][2]
+
+
+def test_linux_virtual_adapter_peer_name_requires_primary_prefix_within_ifname_limit() -> None:
+    backend = LinuxBackend(dry_run=True)
+
+    with pytest.raises(BackendError, match="too long"):
+        backend.plan_virtual_adapter_create("py-virtual-long", AddressInfo("192.168.56.1", 24))
 
 
 def test_macos_virtual_adapter_plan_creates_bridge() -> None:
