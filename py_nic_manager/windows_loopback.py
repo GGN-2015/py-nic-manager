@@ -12,6 +12,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from .backends import decode_command_output
+from .subprocess_utils import run_no_window
 from .windows_device_policy import assert_ndis_net_adapter, ensure_ndis_device_install_policy
 
 
@@ -213,7 +214,7 @@ def _rename_adapter(current_name: object, new_name: str) -> None:
 
 def _run_powershell(script: str) -> str:
     executable = "powershell"
-    completed = subprocess.run(
+    completed = run_no_window(
         [executable, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
         check=False,

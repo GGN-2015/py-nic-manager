@@ -4,6 +4,7 @@ import platform
 import subprocess
 
 from .backends import decode_command_output
+from .subprocess_utils import run_no_window
 
 
 NET_SETUP_CLASS_GUID = "{4d36e972-e325-11ce-bfc1-08002be10318}"
@@ -166,7 +167,7 @@ if ($device -and $device.Class -and $device.Class -ne "Net") {{
 
 
 def _run_powershell(script: str) -> str:
-    completed = subprocess.run(
+    completed = run_no_window(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
         check=False,

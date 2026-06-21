@@ -8,6 +8,7 @@ import sys
 from collections.abc import Mapping
 
 from .admin import is_admin
+from .subprocess_utils import run_no_window
 
 
 QT_PROBE_TIMEOUT_SECONDS = 8
@@ -69,10 +70,17 @@ def _admin_relaunch_command(
     cwd: str | None = None,
     entrypoint: str | None = None,
 ) -> list[str]:
-    launch_command = shutil.which("py-admin-launch") or "py-admin-launch"
-    package_entrypoint = entrypoint or shutil.which(PACKAGE_ENTRYPOINT) or PACKAGE_ENTRYPOINT
+    if _is_frozen_app() and entrypoint is None:
+        launch_command = sys.executable
+        launch_args = ["-m", "py_admin_launch"]
+        package_entrypoint = sys.executable
+    else:
+        launch_command = shutil.which("py-admin-launch") or "py-admin-launch"
+        launch_args = []
+        package_entrypoint = entrypoint or shutil.which(PACKAGE_ENTRYPOINT) or PACKAGE_ENTRYPOINT
     return [
         launch_command,
+        *launch_args,
         "--cwd",
         cwd or os.getcwd(),
         "--",
@@ -86,7 +94,7 @@ def _relaunch_as_admin() -> int:
     env[ELEVATION_GUARD_ENV] = "1"
     command = _admin_relaunch_command()
     try:
-        completed = subprocess.run(command, check=False, env=env)
+        completed = run_no_window(command, check=False, env=env)
     except OSError as exc:
         print(f"Failed to relaunch Py NIC Manager with administrator privileges: {exc}", file=sys.stderr)
         return 1
@@ -107,6 +115,8 @@ def _qt_supported_on_current_platform() -> bool:
 
 
 def _qt_runtime_available() -> bool:
+    if _is_frozen_app():
+        return True
     code = (
         "from PyQt6.QtWidgets import QApplication; "
         "app = QApplication(['py-nic-manager-probe']); "
@@ -115,7 +125,7 @@ def _qt_runtime_available() -> bool:
     env = os.environ.copy()
     env.setdefault("QT_LOGGING_RULES", "*.debug=false")
     try:
-        completed = subprocess.run(
+        completed = run_no_window(
             [sys.executable, "-c", code],
             capture_output=True,
             check=False,
@@ -125,6 +135,10 @@ def _qt_runtime_available() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return completed.returncode == 0
+
+
+def _is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
 
 
 if __name__ == "__main__":

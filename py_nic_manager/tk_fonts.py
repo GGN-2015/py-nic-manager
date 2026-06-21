@@ -10,6 +10,8 @@ import tkinter.font as tkfont
 from importlib import resources
 from pathlib import Path
 
+from .subprocess_utils import run_no_window
+
 
 BUNDLED_FONT_FAMILY = "JetBrains Mono"
 BUNDLED_FONT_FILES = (
@@ -69,7 +71,7 @@ def _configure_fontconfig() -> None:
     os.environ["FONTCONFIG_PATH"] = os.pathsep.join(paths)
 
     try:
-        subprocess.run(
+        run_no_window(
             ["fc-cache", "-f", str(directory)],
             capture_output=True,
             check=False,

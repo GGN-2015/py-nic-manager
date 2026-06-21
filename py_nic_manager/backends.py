@@ -10,8 +10,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from pathlib import Path
 
 from .models import (
     AdapterInfo,
@@ -24,6 +26,7 @@ from .models import (
     RouteInfo,
     VirtualAdapterInfo,
 )
+from .subprocess_utils import run_no_window
 from .validation import netmask_to_prefix, normalize_mac, prefix_to_netmask
 
 
@@ -298,8 +301,10 @@ class BaseBackend(ABC):
     def run(self, command: list[str]) -> CommandResult:
         if self.dry_run:
             return CommandResult(command=command, returncode=0)
+        if _is_frozen_helper_command(command):
+            return _run_frozen_helper_command(command)
         try:
-            completed = subprocess.run(
+            completed = run_no_window(
                 command,
                 capture_output=True,
                 check=False,
@@ -2366,7 +2371,7 @@ def _windows_code_page_encodings() -> list[str]:
     encodings: list[str] = []
     for args in (["chcp"], ["cmd", "/c", "chcp"]):
         try:
-            completed = subprocess.run(args, capture_output=True, check=False, timeout=5)
+            completed = run_no_window(args, capture_output=True, check=False, timeout=5)
         except (FileNotFoundError, subprocess.SubprocessError):
             continue
         raw = completed.stdout + completed.stderr
@@ -2595,6 +2600,54 @@ def _load_managed_nat_rules() -> list[NatRule]:
         return [NatRule.from_dict(item) for item in load_rules()]
     except Exception:
         return []
+
+
+def _is_frozen_helper_command(command: list[str]) -> bool:
+    return (
+        bool(getattr(sys, "frozen", False))
+        and len(command) >= 3
+        and Path(command[0]).resolve() == Path(sys.executable).resolve()
+        and command[1] == "-m"
+        and command[2].startswith(("py_nic_manager.", "py_admin_launch"))
+    )
+
+
+def _run_frozen_helper_command(command: list[str]) -> CommandResult:
+    with tempfile.TemporaryDirectory(prefix="py-nic-manager-helper-") as directory:
+        stdout_path = Path(directory) / "stdout.txt"
+        stderr_path = Path(directory) / "stderr.txt"
+        helper_command = [
+            command[0],
+            "--py-nic-manager-frozen-stdout",
+            str(stdout_path),
+            "--py-nic-manager-frozen-stderr",
+            str(stderr_path),
+            *command[1:],
+        ]
+        try:
+            completed = run_no_window(helper_command, check=False, timeout=90)
+        except subprocess.TimeoutExpired as exc:
+            return CommandResult(
+                command=command,
+                returncode=124,
+                stdout=_read_text_file(stdout_path),
+                stderr=_read_text_file(stderr_path) or decode_command_output(exc.stderr or b"") or "Command timed out after 90 seconds.",
+            )
+        except FileNotFoundError as exc:
+            raise BackendError(f"Command not found: {command[0]}") from exc
+        return CommandResult(
+            command=command,
+            returncode=completed.returncode,
+            stdout=_read_text_file(stdout_path),
+            stderr=_read_text_file(stderr_path),
+        )
+
+
+def _read_text_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _managed_nat_create_plan(rule: NatRule, platform_name: str) -> OperationPlan:

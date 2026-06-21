@@ -9,6 +9,7 @@ import pytest
 
 from py_nic_manager.backends import (
     BackendError,
+    BaseBackend,
     LinuxBackend,
     MacOSBackend,
     WindowsBackend,
@@ -25,12 +26,15 @@ from py_nic_manager import windows_wintun
 from py_nic_manager.__main__ import (
     ELEVATION_GUARD_ENV,
     _admin_relaunch_command,
+    _is_frozen_app,
     _gui_preference,
     _qt_runtime_available,
     _qt_supported_on_current_platform,
     _should_relaunch_as_admin,
 )
+from py_nic_manager import frozen_entry
 from py_nic_manager import global_forwarding, nat_persistence, ttl_exceeded
+from py_nic_manager import subprocess_utils
 from py_nic_manager.models import (
     AdapterInfo,
     AddressInfo,
@@ -332,6 +336,7 @@ def test_gui_preference_env_values() -> None:
 
 def test_non_admin_launch_uses_py_admin_launch_package_entrypoint(monkeypatch) -> None:
     monkeypatch.setattr("shutil.which", lambda value: None)
+    monkeypatch.setattr("sys.frozen", False, raising=False)
 
     command = _admin_relaunch_command(["--flag"], cwd="C:\\work", entrypoint="py-nic-manager")
 
@@ -339,6 +344,154 @@ def test_non_admin_launch_uses_py_admin_launch_package_entrypoint(monkeypatch) -
     assert _should_relaunch_as_admin({}, admin_checker=lambda: False) is True
     assert _should_relaunch_as_admin({ELEVATION_GUARD_ENV: "1"}, admin_checker=lambda: False) is False
     assert _should_relaunch_as_admin({}, admin_checker=lambda: True) is False
+
+
+def test_frozen_admin_launch_relaunches_current_executable(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda value: None)
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", "C:\\Apps\\PyNICManager.exe")
+
+    command = _admin_relaunch_command(["--flag"], cwd="C:\\work")
+
+    assert _is_frozen_app() is True
+    assert command == [
+        "C:\\Apps\\PyNICManager.exe",
+        "-m",
+        "py_admin_launch",
+        "--cwd",
+        "C:\\work",
+        "--",
+        "C:\\Apps\\PyNICManager.exe",
+        "--flag",
+    ]
+
+
+def test_frozen_entry_dispatches_internal_helper(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class FakeModule:
+        @staticmethod
+        def main(argv: list[str]) -> int:
+            calls.append(argv)
+            return 7
+
+    monkeypatch.setattr(frozen_entry.importlib, "import_module", lambda name: FakeModule)
+
+    result = frozen_entry._dispatch_python_module_style_call(
+        ["PyNICManager.exe", "-m", "py_nic_manager.windows_virtual", "list"]
+    )
+
+    assert result == 7
+    assert calls == [["list"]]
+
+
+def test_frozen_backend_helper_command_reads_redirected_stdout(monkeypatch) -> None:
+    class HelperBackend(BaseBackend):
+        def list_adapters(self):
+            return []
+
+        def list_routes(self):
+            return []
+
+        def list_nat_rules(self):
+            return []
+
+        def list_virtual_adapters(self):
+            return []
+
+        def plan_adapter_update(self, adapter, address, gateway, dns_servers, mac, dhcp_enabled):
+            raise NotImplementedError
+
+        def plan_route_add(self, route):
+            raise NotImplementedError
+
+        def plan_route_delete(self, route):
+            raise NotImplementedError
+
+        def plan_route_update(self, old_route, new_route):
+            raise NotImplementedError
+
+        def plan_loopback_create(self, name):
+            raise NotImplementedError
+
+        def plan_loopback_delete(self, adapter):
+            raise NotImplementedError
+
+        def plan_virtual_adapter_create(self, name, address):
+            raise NotImplementedError
+
+        def plan_virtual_adapter_delete(self, adapter):
+            raise NotImplementedError
+
+        def plan_adapter_forwarding_update(self, adapter, enabled):
+            raise NotImplementedError
+
+        def plan_adapter_ttl_exceeded_icmp_update(self, adapter, enabled):
+            raise NotImplementedError
+
+        def plan_adapter_admin_update(self, adapter, enabled):
+            raise NotImplementedError
+
+        def get_global_forwarding_enabled(self):
+            return None
+
+        def plan_global_forwarding_update(self, enabled):
+            raise NotImplementedError
+
+        def plan_nat_create(self, rule):
+            raise NotImplementedError
+
+        def plan_nat_delete(self, rule):
+            raise NotImplementedError
+
+    class Completed:
+        returncode = 0
+
+    def fake_run(command: list[str], **_kwargs):
+        stdout_path = command[command.index("--py-nic-manager-frozen-stdout") + 1]
+        Path(stdout_path).write_text('{"ok": true}', encoding="utf-8")
+        return Completed()
+
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", "C:\\Apps\\PyNICManager.exe")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    data = HelperBackend().run_json(
+        ["C:\\Apps\\PyNICManager.exe", "-m", "py_nic_manager.windows_virtual", "list"]
+    )
+
+    assert data == {"ok": True}
+
+
+def test_windows_no_window_subprocess_kwargs(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class StartupInfo:
+        def __init__(self) -> None:
+            self.dwFlags = 0
+            self.wShowWindow = 1
+
+    class Completed:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    def fake_run(command, **kwargs):
+        captured.update(kwargs)
+        return Completed()
+
+    monkeypatch.setattr(subprocess_utils.sys, "platform", "win32")
+    monkeypatch.setattr(subprocess_utils.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "STARTUPINFO", StartupInfo, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "SW_HIDE", 0, raising=False)
+    monkeypatch.setattr(subprocess_utils.subprocess, "run", fake_run)
+
+    subprocess_utils.run_no_window(["powershell"], capture_output=True, check=False)
+
+    assert captured["creationflags"] == 0x08000000
+    assert captured["startupinfo"].dwFlags & 1
+    assert captured["startupinfo"].wShowWindow == 0
 
 
 def test_qt_auto_mode_is_windows_only(monkeypatch) -> None:
@@ -1262,7 +1415,7 @@ def test_windows_wintun_create_passes_stop_file_to_keeper(monkeypatch: pytest.Mo
     monkeypatch.setattr(windows_wintun, "_adapter_exists", lambda name: False)
     monkeypatch.setattr(windows_wintun, "ensure_ndis_device_install_policy", lambda: calls.append(("policy", "")))
     monkeypatch.setattr(windows_wintun, "assert_ndis_net_adapter", lambda **kwargs: calls.append(("ndis", kwargs["interface_index"])))
-    monkeypatch.setattr(windows_wintun.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(windows_wintun, "popen_no_window", fake_popen)
     monkeypatch.setattr(windows_wintun, "_wait_for_adapter", lambda name, timeout: {"Name": name, "InterfaceIndex": 42})
     monkeypatch.setattr(windows_wintun, "_configure_address", lambda name, address: calls.append(("address", address)))
     monkeypatch.setattr(windows_wintun, "_install_startup_task", lambda name, address: "task")

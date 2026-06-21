@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from collections.abc import Iterator
 
 from .backends import decode_command_output
+from .subprocess_utils import popen_no_window
 from .validation import validate_ip
 
 
@@ -32,9 +32,7 @@ def start_ping_test_process(
         "stderr": subprocess.STDOUT,
         "bufsize": 0,
     }
-    if sys.platform.startswith("win"):
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return subprocess.Popen(command, **kwargs)
+    return popen_no_window(command, **kwargs)
 
 
 def iter_ping_process_output(process: subprocess.Popen[bytes]) -> Iterator[str]:

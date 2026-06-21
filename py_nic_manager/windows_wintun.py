@@ -14,6 +14,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from .backends import decode_command_output
+from .subprocess_utils import popen_no_window, run_no_window
 from .windows_device_policy import assert_ndis_net_adapter, ensure_ndis_device_install_policy
 
 
@@ -66,8 +67,8 @@ def create_virtual_adapter(name: str, address: str = "") -> None:
         "--stop-file",
         str(stop_path),
     ]
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    process = subprocess.Popen(
+    creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
+    process = popen_no_window(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -380,7 +381,7 @@ def _assert_address_pingable(name: str, address: str) -> None:
         return
     last_error = ""
     for _attempt in range(12):
-        completed = subprocess.run(["ping", "-n", "1", "-w", "1000", ip], capture_output=True, check=False)
+        completed = run_no_window(["ping", "-n", "1", "-w", "1000", ip], capture_output=True, check=False)
         if completed.returncode == 0:
             return
         output = (decode_command_output(completed.stdout) + "\n" + decode_command_output(completed.stderr)).strip()
@@ -445,7 +446,7 @@ def _terminate_process(pid: int) -> None:
             return
         time.sleep(0.3)
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+        run_no_window(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
     except OSError:
         pass
 
@@ -536,7 +537,7 @@ def _clean_adapter_name(name: str) -> str:
 
 
 def _run(command: list[str]) -> str:
-    completed = subprocess.run(command, capture_output=True, check=False)
+    completed = run_no_window(command, capture_output=True, check=False)
     stdout = decode_command_output(completed.stdout).strip()
     stderr = decode_command_output(completed.stderr).strip()
     if completed.returncode != 0:

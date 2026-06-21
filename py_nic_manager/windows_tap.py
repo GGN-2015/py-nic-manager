@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from .backends import decode_command_output
+from .subprocess_utils import run_no_window
 from .windows_device_policy import assert_ndis_net_adapter, ensure_ndis_device_install_policy
 
 
@@ -318,7 +319,7 @@ def _assert_address_pingable(name: str, address: str) -> None:
         return
     last_error = ""
     for _attempt in range(12):
-        completed = subprocess.run(["ping", "-n", "1", "-w", "1000", ip], capture_output=True, check=False)
+        completed = run_no_window(["ping", "-n", "1", "-w", "1000", ip], capture_output=True, check=False)
         if completed.returncode == 0:
             return
         output = (decode_command_output(completed.stdout) + "\n" + decode_command_output(completed.stderr)).strip()
@@ -390,7 +391,7 @@ def _clean_adapter_name(name: str) -> str:
 
 
 def _run(command: list[str]) -> str:
-    completed = subprocess.run(command, capture_output=True, check=False)
+    completed = run_no_window(command, capture_output=True, check=False)
     stdout = decode_command_output(completed.stdout).strip()
     stderr = decode_command_output(completed.stderr).strip()
     if completed.returncode != 0:
